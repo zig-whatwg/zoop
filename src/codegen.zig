@@ -1,6 +1,71 @@
+//! # Code Generation Engine for Zoop
+//!
+//! This module implements the core code generation logic for Zoop. It scans
+//! Zig source files, parses class definitions, resolves cross-file inheritance,
+//! and generates enhanced code with method wrappers and property accessors.
+//!
+//! ## Architecture
+//!
+//! The code generator operates in two passes:
+//!
+//! ### Pass 1: Scan and Build Registry
+//!
+//! 1. Walk all `.zig` files in source directory
+//! 2. Parse each file to find `zoop.class()` calls
+//! 3. Extract class definitions, parent classes, and imports
+//! 4. Build a global registry of all classes and their relationships
+//! 5. Detect circular inheritance
+//!
+//! ### Pass 2: Generate Code
+//!
+//! 1. For each file with classes:
+//!    - Generate enhanced struct definitions
+//!    - Add `super: ParentType` field for inherited classes
+//!    - Generate property getter/setter methods
+//!    - Generate method wrappers for inherited methods (unless overridden)
+//! 2. Write generated files to output directory (preserving structure)
+//!
+//! ## Cross-File Inheritance
+//!
+//! When a child class extends a parent from another file:
+//!
+//! ```zig
+//! // file1.zig
+//! const base = @import("base.zig");
+//! const Child = zoop.class(struct {
+//!     pub const extends = base.Parent,
+//! });
+//! ```
+//!
+//! The generator:
+//! 1. Parses the `@import("base.zig")` statement
+//! 2. Resolves the relative path to find `base.zig`
+//! 3. Looks up `Parent` class in the global registry
+//! 4. Generates wrappers for `Parent`'s methods in `Child`
+//!
+//! ## Security
+//!
+//! - Path validation prevents traversal attacks (`..` blocked)
+//! - Memory-safe: all allocations properly freed, `errdefer` on error paths
+//! - No unsafe pointer casts
+//!
+//! ## Public API
+//!
+//! - `generateAllClasses()` - Main entry point for code generation
+//! - `ClassConfig` - Configuration for method/property prefixes
+//!
+//! ## Implementation Details
+//!
+//! See IMPLEMENTATION.md for detailed architecture documentation.
+
 const std = @import("std");
 
-/// Configuration for generated class method prefixes
+/// Configuration for generated class method prefixes.
+///
+/// Controls the naming of generated wrapper methods and property accessors.
+/// These settings are typically passed via command-line arguments to zoop-codegen.
+///
+/// See src/root.zig or src/class.zig for detailed documentation on usage.
 pub const ClassConfig = struct {
     method_prefix: []const u8 = "call_",
     getter_prefix: []const u8 = "get_",

@@ -1,33 +1,266 @@
-//! Zoop - Zero-cost OOP for Zig
+//! # Zoop - Zero-Cost Object-Oriented Programming for Zig
 //!
-//! Zoop provides automatic code generation for object-oriented programming
-//! in Zig, with zero runtime overhead and configurable method prefixes.
+//! Zoop is a build-time code generator that brings familiar OOP patterns to Zig
+//! while maintaining zero runtime overhead and full compile-time type safety.
 //!
-//! ## Usage
+//! ## Quick Example
 //!
-//! In your source code, use `zoop.class()` to mark structs for code generation:
-//!
+//! **Your source code:**
 //! ```zig
 //! const zoop = @import("zoop");
 //!
 //! pub const Animal = zoop.class(struct {
 //!     name: []const u8,
-//!     pub fn makeSound(self: *Animal) void { ... }
+//!     age: u8,
+//!
+//!     pub fn speak(self: *Animal) void {
+//!         std.debug.print("{s} makes a sound\n", .{self.name});
+//!     }
 //! });
 //!
 //! pub const Dog = zoop.class(struct {
-//!     pub const extends = Animal;
+//!     pub const extends = Animal,  // Inheritance
+//!
 //!     breed: []const u8,
+//!
+//!     pub fn speak(self: *Dog) void {  // Override
+//!         std.debug.print("{s} barks!\n", .{self.super.name});
+//!     }
 //! });
 //! ```
 //!
-//! In your build.zig, integrate the zoop-codegen tool. See README for details.
+//! **What Zoop generates:**
+//! ```zig
+//! pub const Animal = struct {
+//!     name: []const u8,
+//!     age: u8,
+//!     pub fn speak(self: *Animal) void { /* your code */ }
+//! };
+//!
+//! pub const Dog = struct {
+//!     super: Animal,  // Embedded parent struct
+//!     breed: []const u8,
+//!
+//!     pub fn speak(self: *Dog) void { /* your override */ }
+//!
+//!     // Auto-generated wrapper methods (inlined, zero-cost)
+//!     pub inline fn call_speak(self: *Dog) void {
+//!         self.super.speak();
+//!     }
+//! };
+//! ```
+//!
+//! ## Integration
+//!
+//! Add to your `build.zig`:
+//! ```zig
+//! const zoop_dep = b.dependency("zoop", .{ .target = target, .optimize = optimize });
+//!
+//! // Run code generation
+//! const codegen_exe = zoop_dep.artifact("zoop-codegen");
+//! const gen_cmd = b.addRunArtifact(codegen_exe);
+//! gen_cmd.addArgs(&.{ "--source-dir", "src", "--output-dir", ".zig-cache/zoop" });
+//!
+//! // Build from generated code
+//! exe.root_source_file = b.path(".zig-cache/zoop/main.zig");
+//! exe.root_module.addImport("zoop", zoop_dep.module("zoop"));
+//! exe.step.dependOn(&gen_cmd.step);
+//! ```
+//!
+//! ## Features
+//!
+//! - **Single & multi-level inheritance** - Unlimited depth via embedded `super` fields
+//! - **Cross-file inheritance** - Import and extend classes from any module
+//! - **Properties** - Auto-generated getters/setters with access control
+//! - **Method forwarding** - Automatic delegation with configurable prefixes
+//! - **Override detection** - Skips wrapper generation for overridden methods
+//! - **Zero runtime cost** - Everything inlines to direct field/method calls
+//! - **Type safe** - Full Zig compiler validation
+//!
+//! ## Documentation
+//!
+//! - README.md - Overview, quick start, examples
+//! - CONSUMER_USAGE.md - Complete integration guide
+//! - API_REFERENCE.md - Detailed API documentation
+//! - IMPLEMENTATION.md - How Zoop works internally
+//!
+//! ## Public API
+//!
+//! This module exports:
+//! - `class()` - Mark a struct for code generation
+//! - `ClassConfig` - Configuration for method prefixes
+//! - `createCodegenStep()` - Helper for build.zig integration
 
 const std = @import("std");
 
-/// Class definition function
-/// Wrap your struct with this to enable inheritance and code generation
+/// Mark a struct definition for code generation with inheritance support.
+///
+/// This is the primary API for using Zoop. Wrap your struct definitions with
+/// `zoop.class()` to enable inheritance, properties, and automatic method generation.
+///
+/// ## Basic Usage
+///
+/// ```zig
+/// const Person = zoop.class(struct {
+///     name: []const u8,
+///     age: u32,
+///
+///     pub fn greet(self: *Person) void {
+///         std.debug.print("Hello, I'm {s}\n", .{self.name});
+///     }
+/// });
+/// ```
+///
+/// ## Inheritance
+///
+/// Use `pub const extends = ParentClass` to declare inheritance:
+///
+/// ```zig
+/// const Employee = zoop.class(struct {
+///     pub const extends = Person,
+///
+///     employee_id: u32,
+///
+///     pub fn work(self: *Employee) void {
+///         std.debug.print("{s} is working\n", .{self.super.name});
+///     }
+/// });
+/// ```
+///
+/// ## Properties
+///
+/// Declare properties for automatic getter/setter generation:
+///
+/// ```zig
+/// const User = zoop.class(struct {
+///     pub const properties = .{
+///         .email = .{ .type = []const u8, .access = .read_write },
+///         .id = .{ .type = u64, .access = .read_only },
+///     };
+///
+///     name: []const u8,  // Regular field
+/// });
+/// ```
+///
+/// Generates: `get_email()`, `set_email()`, `get_id()` (no setter for read_only)
+///
+/// ## What Gets Generated
+///
+/// For child classes, Zoop generates:
+/// 1. `super: ParentType` field (embedded parent)
+/// 2. Wrapper methods like `call_parentMethod()` for inherited methods
+/// 3. Property getters/setters based on `properties` declaration
+///
+/// All generated methods are `inline`, resulting in zero runtime overhead.
+///
+/// ## Important Notes
+///
+/// - The return value is a minimal type stub used during parsing
+/// - The actual enhanced struct is generated by `zoop-codegen` at build time
+/// - Generated code is placed in the output directory specified in build.zig
+/// - Your build must compile from the generated code, not the source
+///
+/// See CONSUMER_USAGE.md for complete integration examples.
 pub const class = @import("class.zig").class;
 
-/// Configuration for generated method names
+/// Configuration for generated method naming.
+///
+/// Controls the prefixes used for generated wrapper methods and property accessors.
+///
+/// ## Fields
+///
+/// - `method_prefix` - Prefix for inherited method wrappers (default: "call_")
+/// - `getter_prefix` - Prefix for property getters (default: "get_")
+/// - `setter_prefix` - Prefix for property setters (default: "set_")
+///
+/// ## Usage
+///
+/// Configure via command-line arguments to `zoop-codegen`:
+///
+/// ```zig
+/// gen_cmd.addArgs(&.{
+///     "--method-prefix", "call_",
+///     "--getter-prefix", "get_",
+///     "--setter-prefix", "set_",
+/// });
+/// ```
+///
+/// ## Examples
+///
+/// **Default prefixes:**
+/// ```zig
+/// employee.call_greet();      // Inherited method
+/// user.get_email();           // Property getter
+/// user.set_email("new@...");  // Property setter
+/// ```
+///
+/// **No prefixes (empty strings):**
+/// ```zig
+/// employee.greet();
+/// user.email();
+/// user.email("new@...");
+/// ```
+///
+/// **Custom prefixes:**
+/// ```zig
+/// --method-prefix "invoke_"
+/// --getter-prefix "read_"
+/// --setter-prefix "write_"
+///
+/// employee.invoke_greet();
+/// user.read_email();
+/// user.write_email("new@...");
+/// ```
 pub const ClassConfig = @import("class.zig").ClassConfig;
+
+/// Helper function to create a code generation step with structured configuration.
+///
+/// This provides a cleaner alternative to manually constructing `addArgs()` calls
+/// in your build.zig. It takes a struct with named fields for all configuration options.
+///
+/// ## Parameters
+///
+/// - `b` - Build instance (`*std.Build`)
+/// - `codegen_exe` - The zoop-codegen artifact from `zoop_dep.artifact("zoop-codegen")`
+/// - `config` - Configuration struct with fields:
+///   - `source_dir: []const u8` - Input directory (default: "src")
+///   - `output_dir: []const u8` - Output directory (default: ".zig-cache/zoop-generated")
+///   - `method_prefix: []const u8` - Method prefix (default: "call_")
+///   - `getter_prefix: []const u8` - Getter prefix (default: "get_")
+///   - `setter_prefix: []const u8` - Setter prefix (default: "set_")
+///
+/// ## Returns
+///
+/// `*std.Build.Step.Run` - The run step that executes code generation
+///
+/// ## Example
+///
+/// ```zig
+/// const zoop_dep = b.dependency("zoop", .{ .target = target, .optimize = optimize });
+/// const codegen_exe = zoop_dep.artifact("zoop-codegen");
+///
+/// // Using helper function (cleaner)
+/// const gen_cmd = zoop.createCodegenStep(b, codegen_exe, .{
+///     .source_dir = "src",
+///     .output_dir = ".zig-cache/zoop-generated",
+///     .method_prefix = "",  // No prefix
+/// });
+///
+/// // Alternative: manual addArgs (more verbose)
+/// const gen_cmd = b.addRunArtifact(codegen_exe);
+/// gen_cmd.addArgs(&.{
+///     "--source-dir", "src",
+///     "--output-dir", ".zig-cache/zoop-generated",
+///     "--method-prefix", "",
+///     "--getter-prefix", "get_",
+///     "--setter-prefix", "set_",
+/// });
+/// ```
+///
+/// Both approaches are equivalent; use whichever feels more natural.
+pub const createCodegenStep = @import("build.zig").createCodegenStep;
+
+test {
+    // Run all sub-module tests
+    @import("std").testing.refAllDecls(@This());
+}

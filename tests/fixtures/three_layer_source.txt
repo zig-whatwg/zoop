@@ -1,0 +1,71 @@
+// This is the SOURCE code that would be written by the user
+// It uses zoop.class() syntax and would be processed by zoop-codegen
+// 
+// NOTE: This is a .txt file because it won't compile without the actual
+// zoop.class() implementation. It's for documentation/reference only.
+
+const std = @import("std");
+
+const Animal = zoop.class(struct {
+    pub const properties = .{
+        .species = .{
+            .type = []const u8,
+            .access = .read_only,
+        },
+        .age = .{
+            .type = u32,
+            .access = .read_write,
+        },
+    };
+    
+    name: []const u8,
+    
+    pub fn speak(self: *const Animal) void {
+        std.debug.print("{s} makes a sound\n", .{self.name});
+    }
+    
+    pub fn getAge(self: *const Animal) u32 {
+        return self.age;
+    }
+});
+
+const Mammal = zoop.class(struct {
+    pub const extends = Animal;
+    
+    pub const properties = .{
+        .fur_color = .{
+            .type = []const u8,
+            .access = .read_write,
+        },
+    };
+    
+    warm_blooded: bool,
+    
+    pub fn nurse(self: *const Mammal) void {
+        std.debug.print("{s} is nursing offspring\n", .{self.super.name});
+    }
+});
+
+const Dog = zoop.class(struct {
+    pub const extends = Mammal;
+    
+    pub const properties = .{
+        .breed = .{
+            .type = []const u8,
+            .access = .read_only,
+        },
+    };
+    
+    good_boy: bool,
+    
+    pub fn bark(self: *const Dog) void {
+        std.debug.print("{s} barks: Woof!\n", .{self.super.super.name});
+    }
+    
+    pub fn speak(self: *const Dog) void {
+        std.debug.print("{s} the {s} barks!\n", .{
+            self.super.super.name, 
+            self.breed
+        });
+    }
+});

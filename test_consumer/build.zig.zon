@@ -1,0 +1,15 @@
+.{
+    .name = .test_consumer,
+    .version = "0.1.0",
+    .fingerprint = 0xe5383c71040e995a,
+    .dependencies = .{
+        .zoop = .{
+            .path = "..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

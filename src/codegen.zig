@@ -1391,72 +1391,11 @@ fn generateEnhancedClassWithRegistry(
             const method = parent_method.method;
             const parent_type = parent_method.parent_type;
 
-            const child_signature = blk: {
-                const sig_inner = std.mem.trim(u8, method.signature[1 .. method.signature.len - 1], " \t");
-                if (sig_inner.len == 0) break :blk method.signature;
+            // Copy and rewrite parent method (same as mixins - no casting!)
+            const rewritten_method = try rewriteMixinMethod(allocator, method.source, parent_type, parsed.name);
+            defer allocator.free(rewritten_method);
 
-                const comma_pos = std.mem.indexOfScalar(u8, sig_inner, ',') orelse sig_inner.len;
-                const first_param = std.mem.trim(u8, sig_inner[0..comma_pos], " \t");
-
-                if (std.mem.startsWith(u8, first_param, "self:")) {
-                    const rest = if (comma_pos < sig_inner.len) sig_inner[comma_pos..] else "";
-                    break :blk try std.fmt.allocPrint(allocator, "(self: *{s}{s})", .{ parsed.name, rest });
-                } else {
-                    break :blk method.signature;
-                }
-            };
-            defer if (!std.mem.eql(u8, child_signature, method.signature)) allocator.free(child_signature);
-
-            const return_type_str = if (method.return_type.len > 0)
-                try std.fmt.allocPrint(allocator, " {s}", .{method.return_type})
-            else
-                "";
-            defer if (return_type_str.len > 0) allocator.free(return_type_str);
-
-            try writer.print("    pub inline fn {s}{s}{s}{s} {{\n", .{
-                config.method_prefix,
-                method.name,
-                child_signature,
-                return_type_str,
-            });
-
-            // Cast self to parent type using @ptrCast and *anyopaque
-            try writer.print("        const parent_ptr: *{s} = @ptrCast(@alignCast(self));\n", .{parent_type});
-
-            if (method.return_type.len > 0 and !std.mem.eql(u8, method.return_type, "void")) {
-                try writer.print("        return parent_ptr.{s}(", .{method.name});
-            } else {
-                try writer.print("        parent_ptr.{s}(", .{method.name});
-            }
-
-            const sig_inner = std.mem.trim(u8, method.signature[1 .. method.signature.len - 1], " \t");
-            if (sig_inner.len > 0) {
-                const params_start = std.mem.indexOfScalar(u8, sig_inner, ',') orelse sig_inner.len;
-                if (params_start < sig_inner.len) {
-                    var param_pos: usize = params_start + 1;
-                    var first_param = true;
-
-                    while (param_pos < sig_inner.len) {
-                        const param_start = param_pos;
-                        const param_end = std.mem.indexOfScalarPos(u8, sig_inner, param_pos, ',') orelse sig_inner.len;
-                        const param = std.mem.trim(u8, sig_inner[param_start..param_end], " \t");
-
-                        if (param.len > 0) {
-                            if (std.mem.indexOfScalar(u8, param, ':')) |colon_pos| {
-                                const param_name = std.mem.trim(u8, param[0..colon_pos], " \t");
-                                if (!first_param) try writer.writeAll(", ");
-                                try writer.print("{s}", .{param_name});
-                                first_param = false;
-                            }
-                        }
-
-                        param_pos = param_end + 1;
-                    }
-                }
-            }
-
-            try writer.writeAll(");\n");
-            try writer.writeAll("    }\n");
+            try writer.print("    {s}\n", .{rewritten_method});
         }
     }
 

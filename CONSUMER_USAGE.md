@@ -383,7 +383,7 @@ var player = Player{
     .health = 100,
 };
 
-try player.call_save();  // Inherited from Entity via @ptrCast
+try player.call_save();  // Inherited from Entity (copied method)
 ```
 
 ### Multi-Level Inheritance
@@ -462,16 +462,18 @@ user.updateTimestamp();
 const age = user.getAge();
 const json = try user.toJson(allocator);
 
-// Parent methods work via @ptrCast:
+// Parent methods work (copied):
 user.call_save();
 ```
 
 **How it works:**
 - **Parent and mixin fields** are both flattened directly into the child class
-- Mixin **methods** are copied with type names rewritten (`*Timestamped` → `*User`)
-- Parent **methods** use `@ptrCast` for polymorphism
+- **Parent and mixin methods** are both copied with type names rewritten
+  - Mixin: `*Timestamped` → `*User`
+  - Parent: `*Entity` → `*User`
 - Child methods override mixin/parent methods (no duplication)
 - Multiple mixins can be applied: `pub const mixins = .{ A, B, C };`
+- **Zero overhead**: No casting, no indirection, just pure method copying
 
 ---
 

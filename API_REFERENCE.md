@@ -266,7 +266,7 @@ const User = struct {
     name: []const u8,
     email: []const u8,
     
-    pub inline fn call_save(self: *User) void { ... }  // From parent via @ptrCast
+    pub inline fn call_save(self: *User) void { ... }  // From parent (copied)
     pub fn updateTimestamp(self: *User) void { ... }    // From mixin (type rewritten)
     pub fn toJson(self: *const User, ...) ![]const u8 { ... }  // From mixin
 };
@@ -428,7 +428,7 @@ After code generation, a child class has this layout:
 ```
 
 This ensures:
-- `@ptrCast` from child to parent is always safe
+- Parent fields are accessible directly (no indirection)
 - Parent fields have stable offsets
 - Child fields are optimized for minimal padding
 

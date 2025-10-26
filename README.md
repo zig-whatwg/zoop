@@ -260,14 +260,14 @@ const Employee = struct {
     age: u32,           // From Person (flattened)
     employee_id: u32,   // Own field
     
-    // Auto-generated method wrappers using @ptrCast...
+    // Auto-generated methods (copied from parent with type rewriting)...
 };
 ```
 
 **Benefits:**
 - ✅ Direct field access: `employee.name` instead of `employee.super.name`
 - ✅ Natural initialization: `.{ .name = "Alice", .age = 30, .employee_id = 123 }`
-- ✅ Polymorphism via `@ptrCast(@alignCast(self))` - accepts the casting overhead for cleaner API
+- ✅ Zero overhead: Parent methods are copied, not delegated
 - ✅ Works like traditional OOP languages
 
 ### Properties
@@ -349,8 +349,8 @@ var player = Player{
     .username = "player1",
 };
 
-player.call_save();  // Entity.save() via @ptrCast
-player.call_move();  // Character.move() via @ptrCast
+player.call_save();  // Entity.save() (copied and type-rewritten)
+player.call_move();  // Character.move() (copied and type-rewritten)
 ```
 
 ### Cross-File Inheritance
@@ -419,7 +419,7 @@ const User = struct {
     name: []const u8,
     email: []const u8,
     
-    pub inline fn call_save(self: *User) void { ... }  // From Entity via @ptrCast
+    pub inline fn call_save(self: *User) void { ... }  // From Entity (copied)
     pub fn updateTimestamp(self: *User) void { ... }    // From Timestamped (type rewritten!)
     pub fn toJson(self: *const User, ...) ![]const u8 { ... }  // From Serializable
 };

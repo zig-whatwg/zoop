@@ -15,15 +15,16 @@ Learn more: [Anthropic's Skills announcement](https://www.anthropic.com/news/ski
 
 ---
 
-## Zoop-Specific Skills
+## Available Skills
 
 ### Directory Structure
 
-All Zoop skills are located in the `skills/` directory:
+All skills are located in the `skills/` directory:
 
 ```
 zoop/
 ├── skills/
+│   ├── zig/                   # General Zig programming
 │   ├── zoop-architecture/     # Understanding Zoop's design
 │   ├── zoop-codegen/          # Working with code generation
 │   ├── zoop-testing/          # Running and writing tests
@@ -31,7 +32,36 @@ zoop/
 └── AGENTS.md                  # This file
 ```
 
-### Available Skills
+### General Skills
+
+#### 0. **zig** (`skills/zig/`)
+
+**Purpose**: Write idiomatic, safe, and performant Zig code
+
+**When to use:**
+- Working with `.zig` files
+- Writing or refactoring Zig code
+- Designing struct layouts
+- Managing memory with allocators
+- Implementing error handling
+
+**Key concepts:**
+- Naming conventions (PascalCase types, snake_case functions)
+- Memory management patterns (factory vs direct creation)
+- Error handling with error unions
+- Comptime programming
+- Type safety best practices
+
+**Resources:**
+- `resources/advanced-patterns.md` - Advanced Zig patterns
+- `resources/c-interop-reference.md` - C interop guide
+- `resources/stdlib-reference.md` - Standard library reference
+- `resources/templates/` - Project templates
+- `scripts/new-project.sh` - Project scaffolding
+
+---
+
+### Zoop-Specific Skills
 
 #### 1. **zoop-architecture** (`skills/zoop-architecture/`)
 

@@ -82,7 +82,12 @@ const codegen = @import("codegen.zig");
 /// - Code generation fails (invalid syntax, I/O errors, etc.)
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    defer {
+        const leaked = gpa.deinit();
+        if (leaked == .leak) {
+            std.debug.print("ERROR: Memory leak detected in zoop-codegen!\n", .{});
+        }
+    }
     const allocator = gpa.allocator();
 
     var args = try std.process.argsWithAllocator(allocator);
@@ -168,15 +173,18 @@ pub fn main() !void {
         std.debug.print("Warning: Using absolute path for output directory: {s}\n", .{out});
     }
 
-    // Run code generation
     std.debug.print("[zoop-codegen] Scanning {s} for class definitions...\n", .{source_dir.?});
 
-    try codegen.generateAllClasses(
+    codegen.generateAllClasses(
         allocator,
         source_dir.?,
         output_dir.?,
         config,
-    );
+    ) catch |err| {
+        std.debug.print("ERROR: Code generation failed: {}\n", .{err});
+        std.debug.print("Please check the error messages above for details.\n", .{});
+        return err;
+    };
 
     std.debug.print("[zoop-codegen] ✓ Generated classes in {s}\n", .{output_dir.?});
 }

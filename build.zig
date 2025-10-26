@@ -268,6 +268,24 @@ pub fn build(b: *std.Build) void {
     });
     const run_mixin_test = b.addRunArtifact(mixin_test);
 
+    const security_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/security_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_security_test = b.addRunArtifact(security_test);
+
+    const string_interning_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/string_interning_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_string_interning_test = b.addRunArtifact(string_interning_test);
+
     // A top level step for running all tests. dependOn can be called multiple
     // times and since the two run steps do not depend on one another, this will
     // make the two of them run in parallel.
@@ -282,6 +300,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_performance_test.step);
     test_step.dependOn(&run_static_method_test.step);
     test_step.dependOn(&run_mixin_test.step);
+    test_step.dependOn(&run_security_test.step);
+    test_step.dependOn(&run_string_interning_test.step);
 
     // Separate step for long-running memory benchmark
     const benchmark_step = b.step("benchmark", "Run memory leak benchmark (20+ seconds)");

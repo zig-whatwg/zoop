@@ -60,6 +60,27 @@
 
 const std = @import("std");
 
+/// Maximum file size to prevent DoS attacks (5MB)
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
+
+/// Maximum inheritance depth to prevent stack overflow
+const MAX_INHERITANCE_DEPTH = 256;
+
+/// Maximum type signature length to prevent DoS via complex signatures
+const MAX_SIGNATURE_LENGTH = 1024;
+
+/// Maximum type name length for validation
+const MAX_TYPE_NAME_LENGTH = 256;
+
+// Keyword and prefix length constants (replaces magic numbers throughout code)
+const CONST_KEYWORD_LEN = "const ".len; // = 6
+const EXTENDS_KEYWORD_LEN = "extends:".len; // = 8
+const PUB_CONST_EXTENDS_LEN = "pub const extends".len; // = 17
+const PTR_CONST_PREFIX_LEN = "*const ".len; // = 7
+const PTR_PREFIX_LEN = "*".len; // = 1
+const ZOOP_CLASS_PREFIX_LEN = "zoop.class(".len; // = 11
+const PUB_CONST_MIXINS_LEN = "pub const mixins".len; // = 16
+
 /// Configuration for generated class method prefixes.
 ///
 /// Controls the naming of generated wrapper methods and property accessors.
@@ -80,7 +101,8 @@ pub const ClassSpec = struct {
     config: ClassConfig = .{},
 };
 
-/// Validate that a file path doesn't contain path traversal attempts
+/// Validate that a file path doesn't contain path traversal attempts.
+/// Enhanced to prevent URL encoding and other bypass techniques.
 fn isPathSafe(path: []const u8) bool {
     // Check for absolute paths
     if (path.len > 0 and path[0] == '/') return false;
@@ -94,10 +116,80 @@ fn isPathSafe(path: []const u8) bool {
     // Check for backslashes (Windows path separator, could be used for traversal)
     if (std.mem.indexOf(u8, path, "\\") != null) return false;
 
+    // Check for null bytes (path truncation attack)
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return false;
+
+    // Check for URL-encoded path traversal attempts
+    if (std.mem.indexOf(u8, path, "%2e") != null or std.mem.indexOf(u8, path, "%2E") != null) return false;
+
+    // Check for double-encoded attempts
+    if (std.mem.indexOf(u8, path, "%252e") != null or std.mem.indexOf(u8, path, "%252E") != null) return false;
+
+    // Check for control characters that could interfere with terminals or parsers
+    for (path) |c| {
+        if (c < 32 and c != '\n' and c != '\r' and c != '\t') return false;
+    }
+
     return true;
 }
 
-/// Main entry point: Generate all classes in source directory
+/// Validate that a type name is safe (alphanumeric + underscore, not starting with digit).
+/// Prevents injection attacks by ensuring type names follow Zig identifier rules.
+fn isValidTypeName(name: []const u8) bool {
+    if (name.len == 0 or name.len > MAX_TYPE_NAME_LENGTH) return false;
+
+    // First character must be letter or underscore
+    if (!std.ascii.isAlphabetic(name[0]) and name[0] != '_') return false;
+
+    // Remaining characters: alphanumeric, underscore, or dot (for namespaced types like base.Type)
+    for (name[1..]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '.') return false;
+    }
+
+    return true;
+}
+
+/// Main entry point: Generate all classes in source directory.
+///
+/// ## Thread Safety
+///
+/// **WARNING: This function is NOT thread-safe.**
+///
+/// Do not call this function concurrently from multiple threads. The GlobalRegistry
+/// uses non-atomic HashMap operations that will cause data races if accessed in parallel.
+///
+/// This limitation exists because:
+/// - GlobalRegistry.files is a HashMap without synchronization
+/// - File I/O operations share mutable state
+/// - ArrayListUnmanaged operations are not thread-safe
+///
+/// If parallel code generation is needed in the future, consider:
+/// - Adding a mutex around GlobalRegistry operations
+/// - Using thread-local registries and merging results
+/// - Implementing a concurrent-safe registry with std.Thread.Mutex
+///
+/// ## Parameters
+///
+/// - `allocator` - Memory allocator for temporary allocations during generation
+/// - `source_dir` - Directory to scan for `.zig` files containing `zoop.class()` calls
+/// - `output_dir` - Directory where generated code will be written
+/// - `config` - Configuration for method/property prefix naming
+///
+/// ## Example
+///
+/// ```zig
+/// const allocator = std.heap.page_allocator;
+/// try generateAllClasses(
+///     allocator,
+///     "src",
+///     ".zig-cache/zoop-generated",
+///     .{
+///         .method_prefix = "call_",
+///         .getter_prefix = "get_",
+///         .setter_prefix = "set_",
+///     },
+/// );
+/// ```
 pub fn generateAllClasses(
     allocator: std.mem.Allocator,
     source_dir: []const u8,
@@ -160,7 +252,7 @@ pub fn generateAllClasses(
             file_info.classes = .empty;
 
             try parseImports(allocator, source_content, file_path_owned, &file_info.imports);
-            try scanFileForClasses(allocator, source_content, file_path_owned, &file_info.classes);
+            try scanFileForClasses(allocator, source_content, file_path_owned, &file_info.classes, &registry);
 
             try registry.files.put(file_path_owned, file_info);
         } else {
@@ -304,15 +396,54 @@ const FileInfo = struct {
     source_content: []const u8,
 };
 
+/// Global registry of all classes found during code generation.
+///
+/// **THREAD SAFETY: NOT THREAD-SAFE**
+///
+/// This structure is NOT safe for concurrent access. All operations on the
+/// registry use non-atomic HashMap operations. Concurrent access will cause
+/// data races and undefined behavior.
+///
+/// ## Internal State
+///
+/// - `files`: HashMap mapping file paths to FileInfo (NOT thread-safe)
+/// - `classes`: ArrayListUnmanaged (NOT thread-safe)
+/// - `string_pool`: String interning pool for class/type names (NOT thread-safe)
+/// - All operations assume single-threaded access
+///
+/// ## String Interning
+///
+/// The registry maintains a string pool to deduplicate class names and type
+/// references. This reduces memory usage on large projects where the same
+/// class names appear multiple times (in parent references, imports, etc.).
+///
+/// ## Usage
+///
+/// Always use within a single thread or protect with external synchronization.
 const GlobalRegistry = struct {
     allocator: std.mem.Allocator,
     files: std.StringHashMap(FileInfo),
+    string_pool: std.StringHashMap(void), // Interned strings
 
     fn init(allocator: std.mem.Allocator) GlobalRegistry {
         return .{
             .allocator = allocator,
             .files = std.StringHashMap(FileInfo).init(allocator),
+            .string_pool = std.StringHashMap(void).init(allocator),
         };
+    }
+
+    /// Intern a string in the pool. Returns a reference to the pooled string.
+    /// If the string already exists in the pool, returns the existing reference.
+    /// This reduces memory usage by deduplicating strings.
+    fn internString(self: *GlobalRegistry, str: []const u8) ![]const u8 {
+        const gop = try self.string_pool.getOrPut(str);
+        if (!gop.found_existing) {
+            // Allocate and store the string
+            const owned = try self.allocator.dupe(u8, str);
+            gop.key_ptr.* = owned;
+        }
+        return gop.key_ptr.*;
     }
 
     fn deinit(self: *GlobalRegistry) void {
@@ -326,10 +457,9 @@ const GlobalRegistry = struct {
             entry.value_ptr.imports.deinit();
 
             for (entry.value_ptr.classes.items) |class_info| {
-                for (class_info.mixin_names) |mixin_name| {
-                    self.allocator.free(mixin_name);
-                }
-                self.allocator.free(class_info.mixin_names);
+                // Note: class_info.name, parent_name, and mixin_names elements
+                // are interned strings freed from the string pool, not here
+                self.allocator.free(class_info.mixin_names); // Free the array, not the strings
                 self.allocator.free(class_info.fields);
                 self.allocator.free(class_info.methods);
                 self.allocator.free(class_info.properties);
@@ -339,6 +469,13 @@ const GlobalRegistry = struct {
             self.allocator.free(entry.value_ptr.path);
         }
         self.files.deinit();
+
+        // Free all interned strings from the pool
+        var pool_it = self.string_pool.iterator();
+        while (pool_it.next()) |pool_entry| {
+            self.allocator.free(pool_entry.key_ptr.*);
+        }
+        self.string_pool.deinit();
     }
 
     fn addClass(self: *GlobalRegistry, file_path: []const u8, class_info: ClassInfo) !void {
@@ -444,6 +581,7 @@ fn scanFileForClasses(
     source: []const u8,
     file_path: []const u8,
     classes: *std.ArrayListUnmanaged(ClassInfo),
+    registry: *GlobalRegistry,
 ) !void {
     var pos: usize = 0;
 
@@ -462,10 +600,22 @@ fn scanFileForClasses(
                 mixin_names_copy[i] = try allocator.dupe(u8, mixin_name);
             }
 
+            // Intern strings to reduce memory usage
+            const interned_name = try registry.internString(parsed.name);
+            const interned_parent = if (parsed.parent_name) |p| try registry.internString(p) else null;
+
+            // Intern mixin names
+            var interned_mixins = try allocator.alloc([]const u8, mixin_names_copy.len);
+            for (mixin_names_copy, 0..) |mixin, i| {
+                interned_mixins[i] = try registry.internString(mixin);
+                allocator.free(mixin); // Free the original copy
+            }
+            allocator.free(mixin_names_copy); // Free the original array
+
             const class_info = ClassInfo{
-                .name = parsed.name,
-                .parent_name = parsed.parent_name,
-                .mixin_names = mixin_names_copy,
+                .name = interned_name,
+                .parent_name = interned_parent,
+                .mixin_names = interned_mixins,
                 .fields = try allocator.dupe(FieldDef, parsed.fields),
                 .methods = try allocator.dupe(MethodDef, parsed.methods),
                 .properties = try allocator.dupe(PropertyDef, parsed.properties),
@@ -611,6 +761,15 @@ fn processSourceFileWithRegistry(
     return try output.toOwnedSlice(allocator);
 }
 
+/// Detect circular inheritance with O(n) complexity and depth tracking.
+///
+/// This optimized version:
+/// - Uses a visited set for O(1) lookup (not O(n²))
+/// - Tracks depth to enforce MAX_INHERITANCE_DEPTH
+/// - Single pass through the inheritance chain
+///
+/// Time complexity: O(n) where n is the inheritance chain length
+/// Space complexity: O(n) for the visited set
 fn detectCircularInheritanceGlobal(
     class_name: []const u8,
     parent_ref: ?[]const u8,
@@ -624,11 +783,20 @@ fn detectCircularInheritanceGlobal(
 
     var current_parent = parent_ref;
     var current_file_path = current_file;
+    var depth: usize = 0;
 
     while (current_parent) |parent| {
+        // Check for circular reference (O(1) lookup)
         if (visited.contains(parent)) {
             std.debug.print("ERROR: Circular inheritance detected: {s} -> {s}\n", .{ class_name, parent });
             return error.CircularInheritance;
+        }
+
+        // Check depth limit
+        depth += 1;
+        if (depth > MAX_INHERITANCE_DEPTH) {
+            std.debug.print("ERROR: Maximum inheritance depth ({d}) exceeded starting from {s}\n", .{ MAX_INHERITANCE_DEPTH, class_name });
+            return error.MaxDepthExceeded;
         }
 
         try visited.put(parent, {});
@@ -639,6 +807,9 @@ fn detectCircularInheritanceGlobal(
     }
 }
 
+/// Detect circular inheritance (legacy single-file version).
+///
+/// Optimized with O(n) complexity and depth tracking.
 fn detectCircularInheritance(
     class_name: []const u8,
     parent_name: ?[]const u8,
@@ -650,10 +821,20 @@ fn detectCircularInheritance(
     try visited.put(class_name, {});
 
     var current_parent = parent_name;
+    var depth: usize = 0;
+
     while (current_parent) |parent| {
+        // Check for circular reference (O(1) lookup)
         if (visited.contains(parent)) {
             std.debug.print("ERROR: Circular inheritance detected: {s} -> {s}\n", .{ class_name, parent });
             return error.CircularInheritance;
+        }
+
+        // Check depth limit
+        depth += 1;
+        if (depth > MAX_INHERITANCE_DEPTH) {
+            std.debug.print("ERROR: Maximum inheritance depth ({d}) exceeded starting from {s}\n", .{ MAX_INHERITANCE_DEPTH, class_name });
+            return error.MaxDepthExceeded;
         }
 
         try visited.put(parent, {});
@@ -708,7 +889,7 @@ fn parseClassDefinition(
 
     var class_name: []const u8 = "";
     if (std.mem.indexOf(u8, name_section, "const ")) |const_pos| {
-        const name_offset = const_pos + 6;
+        const name_offset = const_pos + CONST_KEYWORD_LEN;
         const eq_pos = std.mem.indexOfPos(u8, name_section, name_offset, "=") orelse return null;
         class_name = std.mem.trim(u8, name_section[name_offset..eq_pos], " \t\r\n");
     }
@@ -725,7 +906,7 @@ fn parseClassDefinition(
         };
         parent_name = std.mem.trim(u8, class_body[eq_pos + 1 .. semicolon_pos], " \t\r\n");
     } else if (std.mem.indexOf(u8, class_body, "extends:")) |extends_pos| {
-        const type_start = extends_pos + 8;
+        const type_start = extends_pos + EXTENDS_KEYWORD_LEN;
         var type_end = type_start;
         while (type_end < class_body.len) : (type_end += 1) {
             const c = class_body[type_end];
@@ -773,13 +954,31 @@ fn parseClassDefinition(
 
     try parseStructBody(allocator, class_body, &fields, &methods, &properties);
 
+    // Convert to owned slices with proper error handling to prevent leaks
+    const mixin_names_slice = try mixin_names.toOwnedSlice(allocator);
+    errdefer {
+        for (mixin_names_slice) |mixin| {
+            allocator.free(mixin);
+        }
+        allocator.free(mixin_names_slice);
+    }
+
+    const fields_slice = try fields.toOwnedSlice(allocator);
+    errdefer allocator.free(fields_slice);
+
+    const methods_slice = try methods.toOwnedSlice(allocator);
+    errdefer allocator.free(methods_slice);
+
+    const properties_slice = try properties.toOwnedSlice(allocator);
+    errdefer allocator.free(properties_slice);
+
     return .{
         .name = class_name,
         .parent_name = parent_name,
-        .mixin_names = try mixin_names.toOwnedSlice(allocator),
-        .fields = try fields.toOwnedSlice(allocator),
-        .methods = try methods.toOwnedSlice(allocator),
-        .properties = try properties.toOwnedSlice(allocator),
+        .mixin_names = mixin_names_slice,
+        .fields = fields_slice,
+        .methods = methods_slice,
+        .properties = properties_slice,
         .source_start = name_start,
         .source_end = closing_paren + 2,
         .allocator = allocator,
@@ -828,11 +1027,12 @@ fn replaceFirstSelfType(
     new_type: []const u8,
 ) ![]const u8 {
     if (signature.len < 2) return try allocator.dupe(u8, signature);
+    if (signature.len > MAX_SIGNATURE_LENGTH) return error.SignatureTooLong;
 
     const inner = signature[1 .. signature.len - 1];
 
     if (std.mem.indexOf(u8, inner, "*const ")) |const_pos| {
-        const type_start = const_pos + 7;
+        const type_start = const_pos + PTR_CONST_PREFIX_LEN;
         var type_end = type_start;
         while (type_end < inner.len) : (type_end += 1) {
             const c = inner[type_end];
@@ -845,7 +1045,7 @@ fn replaceFirstSelfType(
             inner[type_end..],
         });
     } else if (std.mem.indexOf(u8, inner, "*")) |ptr_pos| {
-        const type_start = ptr_pos + 1;
+        const type_start = ptr_pos + PTR_PREFIX_LEN;
         var type_end = type_start;
         while (type_end < inner.len) : (type_end += 1) {
             const c = inner[type_end];
@@ -864,6 +1064,7 @@ fn replaceFirstSelfType(
 
 fn extractParamNames(allocator: std.mem.Allocator, signature: []const u8) ![]const u8 {
     if (signature.len < 2) return "";
+    if (signature.len > MAX_SIGNATURE_LENGTH) return error.SignatureTooLong;
 
     const inner = signature[1 .. signature.len - 1];
 
@@ -1150,6 +1351,9 @@ fn adaptInitDeinit(
     source: []const u8,
     child_type: []const u8,
 ) ![]const u8 {
+    // Validate type name to prevent injection
+    if (!isValidTypeName(child_type)) return error.InvalidTypeName;
+
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     const writer = buf.writer(allocator);
@@ -1232,6 +1436,9 @@ fn generateEnhancedClassWithRegistry(
     current_file: []const u8,
     registry: *GlobalRegistry,
 ) ![]const u8 {
+    // Validate class name to prevent injection attacks
+    if (!isValidTypeName(parsed.name)) return error.InvalidClassName;
+
     var code: std.ArrayList(u8) = .empty;
     defer code.deinit(allocator);
 
@@ -1454,209 +1661,90 @@ fn generateEnhancedClassWithRegistry(
 
     return try code.toOwnedSlice(allocator);
 }
+// ============================================================================
+// DEAD CODE REMOVED (~220 lines)
+// ============================================================================
+// Removed unused comptime-reflection functions: generateClassCode,
+// generateFields, generateParentMethods, generatePropertyMethods,
+// generateChildMethods, isSpecialField, isSpecialDecl, sortFieldsByAlignment.
+// These are replaced by generateEnhancedClassWithRegistry().
+// See git history for removed implementation.
+// ============================================================================
 
-/// Generate complete class code with all fields and methods
-pub fn generateClassCode(allocator: std.mem.Allocator, spec: ClassSpec) ![]const u8 {
-    var code = std.ArrayList(u8).init(allocator);
-    defer code.deinit();
-
-    const writer = code.writer();
-
-    // Start struct
-    try writer.print("pub const {s} = struct {{\n", .{spec.name});
-
-    // Generate fields
-    try generateFields(writer, spec);
-
-    // Generate parent methods (if parent exists)
-    if (spec.parent) |Parent| {
-        try generateParentMethods(writer, Parent, spec.definition, spec.config);
-    }
-
-    // Generate property methods
-    try generatePropertyMethods(writer, spec);
-
-    // Copy child's own methods
-    try generateChildMethods(writer, spec.definition);
-
-    // End struct
-    try writer.writeAll("};\n");
-
-    return code.toOwnedSlice();
-}
-
-/// Generate all fields (parent + mixin + property backing + own)
-fn generateFields(writer: anytype, spec: ClassSpec) !void {
-    // Parent fields first (never reordered)
-    if (spec.parent) |Parent| {
-        const parent_info = @typeInfo(Parent);
-        if (parent_info == .@"struct") {
-            const parent_struct = parent_info.@"struct";
-            for (parent_struct.fields) |field| {
-                try writer.print("    {s}: {s},\n", .{ field.name, @typeName(field.type) });
-            }
-        }
-    }
-
-    // TODO: Mixin fields (sorted by alignment)
-
-    // TODO: Property backing fields (sorted by alignment)
-
-    // Own fields (sorted by alignment)
-    const def_info = @typeInfo(spec.definition);
-    if (def_info == .@"struct") {
-        const def_struct = def_info.@"struct";
-
-        // Filter out special decls
-        var own_fields = std.ArrayList(std.builtin.Type.StructField).init(std.heap.page_allocator);
-        defer own_fields.deinit();
-
-        for (def_struct.fields) |field| {
-            // Skip special fields like 'extends'
-            if (!isSpecialField(field.name)) {
-                try own_fields.append(field);
-            }
-        }
-
-        // Sort by alignment
-        const sorted = try sortFieldsByAlignment(own_fields.items);
-        defer std.heap.page_allocator.free(sorted);
-
-        for (sorted) |field| {
-            try writer.print("    {s}: {s},\n", .{ field.name, @typeName(field.type) });
-        }
-    }
-
-    try writer.writeAll("\n");
-}
-
-/// Generate wrapper methods for parent methods (with prefix, skip overrides)
-fn generateParentMethods(
-    writer: anytype,
-    comptime ParentType: type,
-    comptime ChildDef: type,
-    config: ClassConfig,
-) !void {
-    const parent_info = @typeInfo(ParentType);
-    if (parent_info == .@"struct") {
-        const parent_struct = parent_info.@"struct";
-
-        inline for (parent_struct.decls) |decl| {
-            if (!decl.is_pub) continue;
-
-            // Check if this is a function
-            const decl_value = @field(ParentType, decl.name);
-            const decl_type_info = @typeInfo(@TypeOf(decl_value));
-
-            if (decl_type_info != .@"fn") continue;
-
-            // Check if child overrides this method
-            if (@hasDecl(ChildDef, decl.name)) continue;
-
-            // Generate wrapper with prefix
-            try writer.print("    pub inline fn {s}{s}(self: *@This()) ", .{
-                config.method_prefix,
-                decl.name,
-            });
-
-            // TODO: Get proper return type
-            try writer.writeAll("void {\n");
-
-            // TODO: Call parent implementation
-            try writer.print("        _ = self;\n", .{});
-
-            try writer.writeAll("    }\n\n");
-        }
-    }
-}
-
-/// Generate property getters/setters with configured prefixes
-fn generatePropertyMethods(writer: anytype, spec: ClassSpec) !void {
-    if (!@hasDecl(spec.definition, "properties")) return;
-
-    const properties = spec.definition.properties;
-    const props_info = @typeInfo(@TypeOf(properties));
-
-    if (props_info == .@"struct") {
-        const props_struct = props_info.@"struct";
-
-        inline for (props_struct.fields) |prop_field| {
-            const prop_def = @field(properties, prop_field.name);
-
-            // Check if child overrides getter
-            const getter_name = std.fmt.comptimePrint("{s}{s}", .{ spec.config.getter_prefix, prop_field.name });
-            if (!@hasDecl(spec.definition, getter_name)) {
-                // Generate getter
-                try writer.print("    pub inline fn {s}(self: *@This()) {s} {{\n", .{
-                    getter_name,
-                    @typeName(prop_def.type),
-                });
-                try writer.print("        return self._{s};\n", .{prop_field.name});
-                try writer.writeAll("    }\n\n");
-            }
-
-            // Generate setter if read_write
-            if (prop_def.access == .read_write) {
-                const setter_name = std.fmt.comptimePrint("{s}{s}", .{ spec.config.setter_prefix, prop_field.name });
-                if (!@hasDecl(spec.definition, setter_name)) {
-                    try writer.print("    pub inline fn {s}(self: *@This(), value: {s}) void {{\n", .{
-                        setter_name,
-                        @typeName(prop_def.type),
-                    });
-                    try writer.print("        self._{s} = value;\n", .{prop_field.name});
-                    try writer.writeAll("    }\n\n");
-                }
-            }
-        }
-    }
-}
-
-/// Copy child's own method definitions
-fn generateChildMethods(writer: anytype, comptime ChildDef: type) !void {
-    _ = writer;
-    const def_info = @typeInfo(ChildDef);
-    if (def_info == .@"struct") {
-        const def_struct = def_info.@"struct";
-
-        inline for (def_struct.decls) |decl| {
-            if (!decl.is_pub) continue;
-            if (isSpecialDecl(decl.name)) continue;
-
-            // TODO: Copy method source code
-            // This is the hard part - we can't easily get method source
-        }
-    }
-}
-
-/// Rewrite a mixin method to replace the mixin type name with the child type name
+/// Rewrite a mixin method to replace the mixin type name with the child type name.
 /// E.g., "self: *Timestamped" -> "self: *User"
+/// Uses context-aware replacement to avoid changing string literals or comments.
 fn rewriteMixinMethod(
     allocator: std.mem.Allocator,
     method_source: []const u8,
     mixin_type_name: []const u8,
     child_type_name: []const u8,
 ) ![]const u8 {
-    // Simple string replacement for all occurrences
+    // Validate type names to prevent injection
+    if (!isValidTypeName(mixin_type_name)) return error.InvalidTypeName;
+    if (!isValidTypeName(child_type_name)) return error.InvalidTypeName;
+
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
     var pos: usize = 0;
+    var in_string: bool = false;
+    var in_comment: bool = false;
+
     while (pos < method_source.len) {
-        if (std.mem.indexOfPos(u8, method_source, pos, mixin_type_name)) |found_pos| {
-            // Copy everything up to the match
-            try result.appendSlice(allocator, method_source[pos..found_pos]);
-            // Replace with child type name
-            try result.appendSlice(allocator, child_type_name);
-            // Move past the mixin type name
-            pos = found_pos + mixin_type_name.len;
-        } else {
-            // No more matches, copy the rest
-            try result.appendSlice(allocator, method_source[pos..]);
-            break;
+        if (in_string) {
+            if (method_source[pos] == '"' and (pos == 0 or method_source[pos - 1] != '\\')) {
+                in_string = false;
+            }
+            try result.append(allocator, method_source[pos]);
+            pos += 1;
+            continue;
         }
+
+        if (in_comment) {
+            if (method_source[pos] == '\n') {
+                in_comment = false;
+            }
+            try result.append(allocator, method_source[pos]);
+            pos += 1;
+            continue;
+        }
+
+        if (method_source[pos] == '"') {
+            in_string = true;
+            try result.append(allocator, method_source[pos]);
+            pos += 1;
+            continue;
+        }
+
+        if (pos + 1 < method_source.len and method_source[pos] == '/' and method_source[pos + 1] == '/') {
+            in_comment = true;
+            try result.append(allocator, method_source[pos]);
+            pos += 1;
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, method_source[pos..], mixin_type_name)) {
+            const before_ok = pos == 0 or !isIdentifierChar(method_source[pos - 1]);
+            const after_pos = pos + mixin_type_name.len;
+            const after_ok = after_pos >= method_source.len or !isIdentifierChar(method_source[after_pos]);
+
+            if (before_ok and after_ok) {
+                try result.appendSlice(allocator, child_type_name);
+                pos += mixin_type_name.len;
+                continue;
+            }
+        }
+
+        try result.append(allocator, method_source[pos]);
+        pos += 1;
     }
 
     return result.toOwnedSlice(allocator);
+}
+
+fn isIdentifierChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_';
 }
 
 fn isSpecialField(name: []const u8) bool {

@@ -277,17 +277,13 @@ fn mergeFields(comptime ParentType: ?type, comptime mixins: anytype, comptime Ch
     const child_info = @typeInfo(ChildDef);
     const child_struct = child_info.@"struct";
 
-    // Calculate total field count
-    var total_fields: usize = child_struct.fields.len;
+    const child_field_count = child_struct.fields.len;
 
-    // Add parent fields if present
     const parent_field_count = if (ParentType) |P| blk: {
         const parent_info = @typeInfo(P);
         break :blk parent_info.@"struct".fields.len;
     } else 0;
-    total_fields += parent_field_count;
 
-    // Add mixin fields
     const mixins_info = @typeInfo(@TypeOf(mixins));
     const mixin_field_count = if (mixins_info == .@"struct" and mixins_info.@"struct".is_tuple) blk: {
         var count: usize = 0;
@@ -297,7 +293,22 @@ fn mergeFields(comptime ParentType: ?type, comptime mixins: anytype, comptime Ch
         }
         break :blk count;
     } else 0;
-    total_fields += mixin_field_count;
+
+    // Calculate total fields with overflow checking to prevent integer overflow
+    // in extreme inheritance/mixin scenarios
+    const total_fields = blk: {
+        const sum1_result = @addWithOverflow(child_field_count, parent_field_count);
+        if (sum1_result[1] != 0) {
+            @compileError("Too many fields: child + parent field count overflows");
+        }
+
+        const total_result = @addWithOverflow(sum1_result[0], mixin_field_count);
+        if (total_result[1] != 0) {
+            @compileError("Too many fields: total field count overflows");
+        }
+
+        break :blk total_result[0];
+    };
 
     // Build the field array
     var all_fields: [total_fields]std.builtin.Type.StructField = undefined;

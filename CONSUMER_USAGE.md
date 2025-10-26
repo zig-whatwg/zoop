@@ -666,12 +666,12 @@ pub const Child = zoop.class(struct {
 
 // ❌ Wrong: flat initialization
 var child = Child{
-    .name = "value",  // ERROR: no such field
+    .name = "value",  // ERROR: no such field (if you didn't use zoop.class)
 };
 
-// ✅ Correct: initialize through super
+// ✅ Correct: fields are flattened with zoop
 var child = Child{
-    .super = Parent{ .name = "value" },
+    .name = "value",  // From Parent (flattened)
 };
 ```
 

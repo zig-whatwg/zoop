@@ -13,7 +13,7 @@ const Employee = zoop.class(struct {
     employee_id: u32,
     
     pub fn work(self: *Employee) void {
-        std.debug.print("{s} is working\n", .{self.super.name});
+        std.debug.print("{s} is working\n", .{self.name});
     }
 });
 
@@ -475,19 +475,19 @@ const Child = zoop.class(struct {
     
     pub fn init(allocator: std.mem.Allocator) !Child {
         return .{
-            .super = try Parent.init(allocator),  // Call parent init
+            .allocator = allocator,  // From Parent (flattened)
             .extra = try allocator.alloc(u8, 512),
         };
     }
     
     pub fn deinit(self: *Child) void {
-        self.super.allocator.free(self.extra);
-        self.super.deinit();  // Call parent deinit
+        self.allocator.free(self.extra);
+        // Parent's deinit would be copied as call_deinit if needed
     }
 });
 ```
 
-Zoop rewrites field accesses in `init`/`deinit` to use `.super` automatically.
+With flattened fields, you can access parent fields directly in `init`/`deinit`.
 
 ---
 
@@ -546,13 +546,12 @@ See [CONSUMER_USAGE.md](CONSUMER_USAGE.md) for complete examples.
 // Your code:
 employee.call_greet();
 
-// Generated (inlined):
-pub inline fn call_greet(self: *Employee) void {
-    self.super.greet();
+// Generated (copied from parent):
+pub fn greet(self: *Employee) void {
+    std.debug.print("Hello, I'm {s}\n", .{self.name});
 }
 
-// Compiler output (optimized):
-// Direct call to Person.greet() - no wrapper overhead
+// No overhead - method is copied, not delegated
 ```
 
 **Benchmark results** (see `tests/performance_test.zig`):

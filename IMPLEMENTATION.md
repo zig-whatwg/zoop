@@ -2,7 +2,7 @@
 
 ## Overview
 
-Zoop uses **build-time code generation** to implement inheritance in Zig via embedded parent structs and method forwarding.
+Zoop uses **build-time code generation** to implement inheritance in Zig via flattened fields and method copying.
 
 ---
 
@@ -21,60 +21,61 @@ User Source Code → zoop-codegen (parse & generate) → Generated Code → Zig 
 
 ---
 
-## Inheritance via Embedded Structs
+## Inheritance via Flattened Fields
 
 ### The Pattern
 
-Instead of flattening fields (unsafe), we **embed the parent struct**:
+Parent and mixin fields are **flattened** directly into child struct:
 
 ```zig
 // User writes:
 const Child = zoop.class(struct {
-    extends: Parent,
+    pub const extends = Parent;
     child_field: u32,
 });
 
 // We generate:
 const Child = struct {
-    super: Parent,      // ✅ Embedded parent
+    parent_field: []const u8,  // ✅ From Parent (flattened)
     child_field: u32,
     
-    // ✅ Generated wrappers
-    pub inline fn call_parent_method(self: *Child) void {
-        self.super.parent_method();
+    // ✅ Copied parent methods (type rewritten)
+    pub fn parent_method(self: *Child) void {
+        std.debug.print("{s}\n", .{self.parent_field});
     }
 };
 ```
 
 ### Why This Works
 
-1. **Type-safe**: No memory layout assumptions
-2. **Idiomatic**: Composition over inheritance
-3. **Clear**: `self.super` explicitly shows relationship
-4. **Safe**: Zig's type system validates everything
+1. **Type-safe**: Zig's type system validates everything
+2. **Natural**: Direct field access like traditional OOP
+3. **Zero overhead**: Methods copied, not delegated
+4. **Consistent**: Parents and mixins work identically
 
 ---
 
-## Method Forwarding
+## Method Copying
 
-### Direct Parent Access
+### Direct Method Copy
 
-For methods that exist in immediate parent:
+Parent methods are copied with type rewriting:
 
 ```zig
-pub inline fn call_method(self: *Child) ReturnType {
-    return self.super.method();
-}
+// Parent method:
+pub fn method(self: *Parent) void { ... }
+
+// Copied to child with type rewritten:
+pub fn method(self: *Child) void { ... }
 ```
 
-### Chained Access
+### Multi-Level Inheritance
 
-For methods from grandparent:
+Methods from all ancestors are copied:
 
 ```zig
-pub inline fn call_grandparent_method(self: *Child) ReturnType {
-    return self.super.call_grandparent_method();  // Chains through parent
-}
+// Grandparent, Parent, and Child methods all copied into Child
+// Each with *Child type in signature
 ```
 
 ### Override Detection
@@ -83,9 +84,9 @@ pub inline fn call_grandparent_method(self: *Child) ReturnType {
 // Parent has: method1(), method2()
 // Child has: method2()
 
-// Generated wrappers:
-pub inline fn call_method1(...) { ... }  // ✅ Generated
-// call_method2 NOT generated - child overrides it
+// Generated methods:
+pub fn method1(self: *Child) { ... }  // ✅ Copied from parent
+// method2 NOT copied - child has its own implementation
 ```
 
 ---
@@ -101,13 +102,13 @@ const Vehicle = zoop.class(struct {
 });
 
 const Car = zoop.class(struct {
-    extends: Vehicle,
+    pub const extends = Vehicle;
     num_doors: u8,
     pub fn honk(self: *Car) void { ... }
 });
 
 const ElectricCar = zoop.class(struct {
-    extends: Car,
+    pub const extends = Car;
     battery: f32,
 });
 ```
@@ -116,30 +117,28 @@ const ElectricCar = zoop.class(struct {
 
 ```zig
 // Vehicle: no changes
-const Vehicle = struct { brand: []const u8, ... };
-
-// Car: embeds Vehicle
-const Car = struct {
-    super: Vehicle,
-    num_doors: u8,
-    
-    pub inline fn call_start(self: *Car) void {
-        self.super.start();
-    }
+const Vehicle = struct { 
+    brand: []const u8,
+    pub fn start(self: *Vehicle) void { ... }
 };
 
-// ElectricCar: embeds Car
+// Car: flattens Vehicle fields, copies methods
+const Car = struct {
+    brand: []const u8,  // From Vehicle (flattened)
+    num_doors: u8,
+    
+    pub fn start(self: *Car) void { ... }  // Copied from Vehicle
+    pub fn honk(self: *Car) void { ... }
+};
+
+// ElectricCar: flattens all ancestor fields, copies all methods
 const ElectricCar = struct {
-    super: Car,
+    brand: []const u8,  // From Vehicle (flattened)
+    num_doors: u8,      // From Car (flattened)
     battery: f32,
     
-    pub inline fn call_start(self: *ElectricCar) void {
-        self.super.call_start();  // ✅ Chains through Car to Vehicle
-    }
-    
-    pub inline fn call_honk(self: *ElectricCar) void {
-        self.super.honk();  // ✅ Direct to Car
-    }
+    pub fn start(self: *ElectricCar) void { ... }  // Copied from Vehicle
+    pub fn honk(self: *ElectricCar) void { ... }   // Copied from Car
 };
 ```
 
@@ -147,23 +146,19 @@ const ElectricCar = struct {
 
 ```zig
 var tesla = ElectricCar{
-    .super = Car{
-        .super = Vehicle{
-            .brand = "Tesla",
-        },
-        .num_doors = 4,
-    },
+    .brand = "Tesla",     // Direct access
+    .num_doors = 4,       // Direct access
     .battery = 100.0,
 };
 
-// Field access:
-tesla.super.super.brand         // ✅ "Tesla"
-tesla.super.num_doors           // ✅ 4
-tesla.battery                   // ✅ 100.0
+// Field access - all direct:
+tesla.brand      // ✅ "Tesla"
+tesla.num_doors  // ✅ 4
+tesla.battery    // ✅ 100.0
 
-// Method access:
-tesla.call_start()              // ✅ Chains to Vehicle.start()
-tesla.call_honk()               // ✅ Calls Car.honk()
+// Method access - all copied:
+tesla.start()    // ✅ Copied from Vehicle
+tesla.honk()     // ✅ Copied from Car
 ```
 
 ---
@@ -203,8 +198,9 @@ Extract:
 
 ```zig
 // Parent exists → add super field first
-if (parsed.parent_name) |parent| {
-    try writer.print("    super: {s},\n", .{parent});
+// First, flatten all parent fields
+for (parent_fields) |field| {
+    try writer.print("    {s}: {s},\n", .{field.name, field.type_name});
 }
 
 // Then child's own fields
@@ -213,21 +209,19 @@ for (parsed.fields) |field| {
 }
 ```
 
-### Method Wrapper Generation
+### Method Copying
 
 ```zig
 // For each parent method not overridden by child:
-pub inline fn {prefix}{method_name}{signature} {return_type} {
-    {return_prefix}self.super.{actual_method_name}({params});
-}
+// Copy the method with type rewriting
+const rewritten = rewriteMixinMethod(method.source, parent_type, child_type);
+try writer.print("    {s}\n", .{rewritten});
 ```
 
 Where:
-- `prefix` = configured (e.g., `call_`)
-- `signature` = full param list with types
-- `return_prefix` = `"return "` if non-void, else `""`
-- `actual_method_name` = direct if in parent, else `call_` version for chaining
-- `params` = comma-separated parameter names only
+- Method source code is copied verbatim
+- All type references to parent are replaced with child type
+- E.g., `self: *Parent` becomes `self: *Child`
 
 ---
 
@@ -302,33 +296,35 @@ No extra pointers, no vtables, no runtime dispatch.
 
 ---
 
-## Comparison to Original Plan
+## Comparison to Evolution
 
-| Aspect | Original Plan | Actual Implementation |
-|--------|---------------|----------------------|
-| Approach | Comptime with @Type() | Build-time codegen |
-| Fields | Flattened with @ptrCast | Embedded super struct |
-| Method access | self.super.method() | self.super.method() ✅ |
-| Code generation | Impossible (usingnamespace) | Works ✅ |
-| Type safety | Unsafe (@ptrCast) | Safe (embedded) ✅ |
-| Zig compatibility | Fails on 0.15+ | Works on 0.15+ ✅ |
+| Aspect | v0.1.0 (Embedded) | v0.2.0 (Flattened) |
+|--------|-------------------|-------------------|
+| Approach | Build-time codegen | Build-time codegen ✅ |
+| Fields | Embedded super struct | Flattened parent fields ✅ |
+| Field access | self.super.field | self.field ✅ |
+| Method access | Delegated via super | Copied with rewriting ✅ |
+| Mixins | Not supported | Fully supported ✅ |
+| Overhead | Minimal (inline) | Zero (copied) ✅ |
+| Initialization | .super = Parent{} | .field = value ✅ |
 
-**Result**: Implementation is more correct and safer than original plan.
+**Result**: v0.2.0 achieves true zero overhead with natural OOP semantics.
 
 ---
 
-## Future Enhancements
+## Implemented Features
 
-### Priority 1 (Next Month)
-- Implement property parsing
-- Implement mixin system
-- Better error messages
-
-### Priority 2 (Next Quarter)
-- Cross-file inheritance support
-- Init/deinit chain generation
-- Field alignment optimization
-- Static method detection
+### Complete ✅
+- Flattened field inheritance
+- Method copying with type rewriting
+- Mixin support (multiple inheritance)
+- Cross-file inheritance
+- Multi-level inheritance
+- Override detection
+- Init/deinit adaptation
+- Property generation
+- Circular dependency detection
+- Path traversal protection
 
 ### Priority 3 (Future)
 - Polymorphism via interfaces

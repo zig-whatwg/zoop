@@ -326,6 +326,10 @@ const GlobalRegistry = struct {
             entry.value_ptr.imports.deinit();
 
             for (entry.value_ptr.classes.items) |class_info| {
+                for (class_info.mixin_names) |mixin_name| {
+                    self.allocator.free(mixin_name);
+                }
+                self.allocator.free(class_info.mixin_names);
                 self.allocator.free(class_info.fields);
                 self.allocator.free(class_info.methods);
                 self.allocator.free(class_info.properties);
@@ -452,9 +456,16 @@ fn scanFileForClasses(
                 mutable.deinit();
             }
 
+            // Duplicate mixin names array
+            var mixin_names_copy = try allocator.alloc([]const u8, parsed.mixin_names.len);
+            for (parsed.mixin_names, 0..) |mixin_name, i| {
+                mixin_names_copy[i] = try allocator.dupe(u8, mixin_name);
+            }
+
             const class_info = ClassInfo{
                 .name = parsed.name,
                 .parent_name = parsed.parent_name,
+                .mixin_names = mixin_names_copy,
                 .fields = try allocator.dupe(FieldDef, parsed.fields),
                 .methods = try allocator.dupe(MethodDef, parsed.methods),
                 .properties = try allocator.dupe(PropertyDef, parsed.properties),
@@ -663,6 +674,7 @@ fn parseClassDefinition(
 ) !?struct {
     name: []const u8,
     parent_name: ?[]const u8,
+    mixin_names: [][]const u8,
     fields: []FieldDef,
     methods: []MethodDef,
     properties: []PropertyDef,
@@ -671,6 +683,10 @@ fn parseClassDefinition(
     allocator: std.mem.Allocator,
 
     fn deinit(self: *@This()) void {
+        for (self.mixin_names) |mixin| {
+            self.allocator.free(mixin);
+        }
+        self.allocator.free(self.mixin_names);
         self.allocator.free(self.fields);
         self.allocator.free(self.methods);
         self.allocator.free(self.properties);
@@ -718,6 +734,34 @@ fn parseClassDefinition(
         parent_name = std.mem.trim(u8, class_body[type_start..type_end], " \t\r\n");
     }
 
+    // Parse mixins: pub const mixins = .{ Mixin1, Mixin2 };
+    var mixin_names: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (mixin_names.items) |mixin| {
+            allocator.free(mixin);
+        }
+        mixin_names.deinit(allocator);
+    }
+
+    if (std.mem.indexOf(u8, class_body, "pub const mixins")) |mixins_pos| {
+        if (std.mem.indexOfPos(u8, class_body, mixins_pos, "=")) |eq_pos| {
+            if (std.mem.indexOfPos(u8, class_body, eq_pos, ".{")) |dot_brace| {
+                if (std.mem.indexOfPos(u8, class_body, dot_brace, "}")) |mixins_close| {
+                    const mixins_content = std.mem.trim(u8, class_body[dot_brace + 2 .. mixins_close], " \t\r\n");
+
+                    // Parse comma-separated mixin names
+                    var it = std.mem.splitSequence(u8, mixins_content, ",");
+                    while (it.next()) |mixin_part| {
+                        const mixin_name = std.mem.trim(u8, mixin_part, " \t\r\n");
+                        if (mixin_name.len > 0) {
+                            try mixin_names.append(allocator, try allocator.dupe(u8, mixin_name));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     var fields: std.ArrayList(FieldDef) = .empty;
     errdefer fields.deinit(allocator);
 
@@ -732,6 +776,7 @@ fn parseClassDefinition(
     return .{
         .name = class_name,
         .parent_name = parent_name,
+        .mixin_names = try mixin_names.toOwnedSlice(allocator),
         .fields = try fields.toOwnedSlice(allocator),
         .methods = try methods.toOwnedSlice(allocator),
         .properties = try properties.toOwnedSlice(allocator),
@@ -1216,9 +1261,23 @@ fn generateEnhancedClassWithRegistry(
 
     if (parsed.parent_name) |parent_name| {
         try writer.print("    super: {s},\n", .{parent_name});
-        if (parsed.properties.len > 0 or parsed.fields.len > 0) {
+        if (parsed.properties.len > 0 or parsed.fields.len > 0 or parsed.mixin_names.len > 0) {
             try writer.writeAll("\n");
         }
+    }
+
+    // Generate mixin fields
+    for (parsed.mixin_names) |mixin_name| {
+        // Extract just the type name (handle cases like "base.Mixin")
+        const type_name = if (std.mem.lastIndexOfScalar(u8, mixin_name, '.')) |dot_pos|
+            mixin_name[dot_pos + 1 ..]
+        else
+            mixin_name;
+
+        try writer.print("    mixin_{s}: {s},\n", .{ type_name, mixin_name });
+    }
+    if (parsed.mixin_names.len > 0 and (parsed.properties.len > 0 or parsed.fields.len > 0)) {
+        try writer.writeAll("\n");
     }
 
     for (parsed.properties) |prop| {

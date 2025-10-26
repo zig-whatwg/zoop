@@ -1445,9 +1445,12 @@ fn generateEnhancedClassWithRegistry(
                 // Skip static methods
                 if (method.is_static) continue;
 
-                // Copy the method source directly - it will use self.field directly
-                // No need to rewrite since mixin fields are flattened into this class
-                try writer.print("    {s}\n", .{method.source});
+                // Need to rewrite the method signature to replace mixin type with child type
+                // e.g., "self: *Timestamped" -> "self: *User"
+                const rewritten_method = try rewriteMixinMethod(allocator, method.source, mixin_info.name, parsed.name);
+                defer allocator.free(rewritten_method);
+
+                try writer.print("    {s}\n", .{rewritten_method});
             }
         }
     }
@@ -1652,6 +1655,37 @@ fn generateChildMethods(writer: anytype, comptime ChildDef: type) !void {
             // This is the hard part - we can't easily get method source
         }
     }
+}
+
+/// Rewrite a mixin method to replace the mixin type name with the child type name
+/// E.g., "self: *Timestamped" -> "self: *User"
+fn rewriteMixinMethod(
+    allocator: std.mem.Allocator,
+    method_source: []const u8,
+    mixin_type_name: []const u8,
+    child_type_name: []const u8,
+) ![]const u8 {
+    // Simple string replacement for all occurrences
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    var pos: usize = 0;
+    while (pos < method_source.len) {
+        if (std.mem.indexOfPos(u8, method_source, pos, mixin_type_name)) |found_pos| {
+            // Copy everything up to the match
+            try result.appendSlice(allocator, method_source[pos..found_pos]);
+            // Replace with child type name
+            try result.appendSlice(allocator, child_type_name);
+            // Move past the mixin type name
+            pos = found_pos + mixin_type_name.len;
+        } else {
+            // No more matches, copy the rest
+            try result.appendSlice(allocator, method_source[pos..]);
+            break;
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
 }
 
 fn isSpecialField(name: []const u8) bool {

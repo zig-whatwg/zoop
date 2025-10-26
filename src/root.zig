@@ -71,6 +71,7 @@
 //!
 //! - **Single & multi-level inheritance** - Unlimited depth via embedded `super` fields
 //! - **Cross-file inheritance** - Import and extend classes from any module
+//! - **Mixins** - Multiple inheritance via composition with field/method flattening
 //! - **Properties** - Auto-generated getters/setters with access control
 //! - **Method forwarding** - Automatic delegation with configurable prefixes
 //! - **Override detection** - Skips wrapper generation for overridden methods

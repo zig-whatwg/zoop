@@ -60,6 +60,7 @@ employee.call_greet();  // Inherited from Person - zero overhead
 
 - ✅ **Single & multi-level inheritance** - Unlimited depth with embedded `super` fields
 - ✅ **Cross-file inheritance** - Import and extend classes from any module
+- ✅ **Mixins** - Multiple inheritance via composition with field and method flattening
 - ✅ **Properties** - Auto-generated getters/setters with `read_only`/`read_write` access
 - ✅ **Method forwarding** - Automatic delegation with configurable prefixes
 - ✅ **Override detection** - No duplicate method generation
@@ -376,6 +377,67 @@ pub const Player = zoop.class(struct {
     health: i32,
 });
 ```
+
+### Mixins (Multiple Inheritance)
+
+Use mixins for code reuse without creating deep hierarchies:
+
+```zig
+// Define reusable behaviors
+const Timestamped = zoop.class(struct {
+    created_at: i64,
+    updated_at: i64,
+    
+    pub fn updateTimestamp(self: *Timestamped) void {
+        self.updated_at = std.time.timestamp();
+    }
+});
+
+const Serializable = zoop.class(struct {
+    pub fn toJson(self: *const Serializable, allocator: std.mem.Allocator) ![]const u8 {
+        // Implementation...
+    }
+});
+
+// Combine parent + mixins
+const User = zoop.class(struct {
+    pub const extends = Entity;  // Single parent
+    pub const mixins = .{ Timestamped, Serializable };  // Multiple mixins
+    
+    name: []const u8,
+    email: []const u8,
+});
+
+// Generated:
+const User = struct {
+    super: Entity,         // Parent (embedded)
+    created_at: i64,       // From Timestamped (flattened!)
+    updated_at: i64,       // From Timestamped (flattened!)
+    name: []const u8,
+    email: []const u8,
+    
+    pub inline fn call_save(self: *User) void { ... }  // From Entity
+    pub fn updateTimestamp(self: *User) void { ... }    // From Timestamped (type rewritten!)
+    pub fn toJson(self: *const User, ...) ![]const u8 { ... }  // From Serializable
+};
+
+var user = User{
+    .super = Entity{ .id = 1 },
+    .created_at = std.time.timestamp(),
+    .updated_at = std.time.timestamp(),
+    .name = "Alice",
+    .email = "alice@example.com",
+};
+
+user.updateTimestamp();  // Mixin method
+user.call_save();        // Parent method
+```
+
+**How mixins work:**
+- Fields are **flattened** directly into the child class
+- Methods are **copied** with type names rewritten (`*Timestamped` → `*User`)
+- Child methods override mixin methods (no duplication)
+- Works alongside parent inheritance (`extends` + `mixins`)
 
 Zoop automatically:
 - Parses all `@import()` statements

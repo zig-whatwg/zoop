@@ -227,6 +227,70 @@ mgr.call_work();   // Inherited from Employee (with prefix)
 
 ---
 
+### Mixins
+
+Compose multiple behaviors without deep inheritance hierarchies:
+
+```zig
+// Define reusable mixins
+const Timestamped = zoop.class(struct {
+    created_at: i64,
+    updated_at: i64,
+    
+    pub fn updateTimestamp(self: *Timestamped) void {
+        self.updated_at = std.time.timestamp();
+    }
+});
+
+const Serializable = zoop.class(struct {
+    pub fn toJson(self: *const Serializable, allocator: std.mem.Allocator) ![]const u8 {
+        // Implementation...
+        return try allocator.dupe(u8, "{}");
+    }
+});
+
+// Use mixins
+const User = zoop.class(struct {
+    pub const extends = Entity;  // Optional parent
+    pub const mixins = .{ Timestamped, Serializable };  // Multiple mixins
+    
+    name: []const u8,
+    email: []const u8,
+});
+
+// Generated:
+const User = struct {
+    super: Entity,         // Parent embedded
+    created_at: i64,       // From Timestamped (flattened)
+    updated_at: i64,       // From Timestamped (flattened)
+    name: []const u8,
+    email: []const u8,
+    
+    pub inline fn call_save(self: *User) void { ... }  // From parent
+    pub fn updateTimestamp(self: *User) void { ... }    // From mixin (type rewritten)
+    pub fn toJson(self: *const User, ...) ![]const u8 { ... }  // From mixin
+};
+```
+
+**Mixin Rules:**
+- Fields are **flattened** directly into child (not embedded)
+- Methods are **copied** with type names rewritten
+- Child methods override mixin methods (no duplication)
+- Multiple mixins can be applied: `pub const mixins = .{ A, B, C };`
+- Works with or without `extends` (can use mixins alone)
+
+**Syntax:**
+```zig
+// Mixins only
+pub const mixins = .{ MixinA, MixinB };
+
+// Parent + mixins
+pub const extends = Parent;
+pub const mixins = .{ MixinA, MixinB };
+```
+
+---
+
 ### Properties (Planned)
 
 Properties with auto-generated getters and setters:

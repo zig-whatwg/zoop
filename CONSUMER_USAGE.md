@@ -415,6 +415,68 @@ var player = Player{
 std.debug.print("ID: {}\n", .{player.super.super.id});  // 1
 ```
 
+### Mixins
+
+Compose multiple behaviors without creating deep inheritance hierarchies:
+
+```zig
+const zoop = @import("zoop");
+
+// Define reusable mixins
+const Timestamped = zoop.class(struct {
+    created_at: i64,
+    updated_at: i64,
+    
+    pub fn updateTimestamp(self: *Timestamped) void {
+        self.updated_at = std.time.timestamp();
+    }
+    
+    pub fn getAge(self: *const Timestamped) i64 {
+        return std.time.timestamp() - self.created_at;
+    }
+});
+
+const Serializable = zoop.class(struct {
+    pub fn toJson(self: *const Serializable, allocator: std.mem.Allocator) ![]const u8 {
+        // Your serialization implementation
+        return try allocator.dupe(u8, "{}");
+    }
+});
+
+// Use mixins with or without parent
+const User = zoop.class(struct {
+    pub const extends = Entity;  // Optional parent
+    pub const mixins = .{ Timestamped, Serializable };  // Multiple mixins
+    
+    name: []const u8,
+    email: []const u8,
+});
+
+// Usage:
+var user = User{
+    .super = Entity{ .id = 1 },
+    // Mixin fields are flattened (not nested):
+    .created_at = std.time.timestamp(),
+    .updated_at = std.time.timestamp(),
+    .name = "Alice",
+    .email = "alice@example.com",
+};
+
+// Mixin methods available directly:
+user.updateTimestamp();
+const age = user.getAge();
+const json = try user.toJson(allocator);
+
+// Parent methods still work:
+user.call_save();
+```
+
+**How it works:**
+- Mixin **fields** are flattened directly into the child class
+- Mixin **methods** are copied with type names rewritten (`*Timestamped` → `*User`)
+- Child methods override mixin methods (no duplication)
+- Multiple mixins can be applied: `pub const mixins = .{ A, B, C };`
+
 ---
 
 ## Configuration

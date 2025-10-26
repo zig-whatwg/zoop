@@ -33,12 +33,6 @@ jobs:
       
       - name: Run tests
         run: zig build test
-      
-      - name: Run benchmarks (Debug)
-        run: zig build benchmark
-      
-      - name: Run benchmarks (ReleaseFast)
-        run: zig build benchmark -Doptimize=ReleaseFast
 
   test-consumer:
     name: Test Consumer Project

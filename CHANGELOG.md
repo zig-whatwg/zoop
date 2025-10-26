@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0-beta] - 2025-10-25
+## [0.1.0] - 2025-10-25
 
 ### Added
 - **Mixins**: Full support for multiple inheritance via composition
@@ -35,5 +35,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Testing**: Comprehensive test suite with 39 tests
 - **Documentation**: Complete guides (README, API_REFERENCE, CONSUMER_USAGE, IMPLEMENTATION)
 
-[Unreleased]: https://github.com/yourname/zoop/compare/v0.1.0-beta...HEAD
-[0.1.0-beta]: https://github.com/yourname/zoop/releases/tag/v0.1.0-beta
+[Unreleased]: https://github.com/yourname/zoop/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/yourname/zoop/releases/tag/v0.1.0

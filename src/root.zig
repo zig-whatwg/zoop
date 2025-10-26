@@ -213,52 +213,10 @@ pub const class = @import("class.zig").class;
 /// ```
 pub const ClassConfig = @import("class.zig").ClassConfig;
 
-/// Helper function to create a code generation step with structured configuration.
-///
-/// This provides a cleaner alternative to manually constructing `addArgs()` calls
-/// in your build.zig. It takes a struct with named fields for all configuration options.
-///
-/// ## Parameters
-///
-/// - `b` - Build instance (`*std.Build`)
-/// - `codegen_exe` - The zoop-codegen artifact from `zoop_dep.artifact("zoop-codegen")`
-/// - `config` - Configuration struct with fields:
-///   - `source_dir: []const u8` - Input directory (default: "src")
-///   - `output_dir: []const u8` - Output directory (default: ".zig-cache/zoop-generated")
-///   - `method_prefix: []const u8` - Method prefix (default: "call_")
-///   - `getter_prefix: []const u8` - Getter prefix (default: "get_")
-///   - `setter_prefix: []const u8` - Setter prefix (default: "set_")
-///
-/// ## Returns
-///
-/// `*std.Build.Step.Run` - The run step that executes code generation
-///
-/// ## Example
-///
-/// ```zig
-/// const zoop_dep = b.dependency("zoop", .{ .target = target, .optimize = optimize });
-/// const codegen_exe = zoop_dep.artifact("zoop-codegen");
-///
-/// // Using helper function (cleaner)
-/// const gen_cmd = zoop.createCodegenStep(b, codegen_exe, .{
-///     .source_dir = "src",
-///     .output_dir = ".zig-cache/zoop-generated",
-///     .method_prefix = "",  // No prefix
-/// });
-///
-/// // Alternative: manual addArgs (more verbose)
-/// const gen_cmd = b.addRunArtifact(codegen_exe);
-/// gen_cmd.addArgs(&.{
-///     "--source-dir", "src",
-///     "--output-dir", ".zig-cache/zoop-generated",
-///     "--method-prefix", "",
-///     "--getter-prefix", "get_",
-///     "--setter-prefix", "set_",
-/// });
-/// ```
-///
-/// Both approaches are equivalent; use whichever feels more natural.
-pub const createCodegenStep = @import("build.zig").createCodegenStep;
+// Note: The `createCodegenStep()` helper function is available in build.zig
+// but cannot be re-exported from this module due to Zig's module system.
+// See build.zig in the Zoop repository for the implementation, or use the
+// manual `gen_cmd.addArgs()` approach shown in CONSUMER_USAGE.md
 
 test {
     // Run all sub-module tests

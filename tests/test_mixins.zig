@@ -22,7 +22,6 @@ pub const Timestamped = struct {
     }
 };
 
-
 // Mixin 2: Serializable
 pub const Serializable = struct {
     pub fn toJson(self: *const Serializable, allocator: std.mem.Allocator) ![]const u8 {
@@ -30,7 +29,6 @@ pub const Serializable = struct {
         return try allocator.dupe(u8, "{}");
     }
 };
-
 
 // Base class
 pub const Entity = struct {
@@ -40,7 +38,6 @@ pub const Entity = struct {
         std.debug.print("Saving entity {}\n", .{self.id});
     }
 };
-
 
 // Class with parent AND mixins
 pub const User = struct {
@@ -71,7 +68,6 @@ pub const User = struct {
         return try allocator.dupe(u8, "{}");
     }
 };
-
 
 test "mixin fields are flattened into child class" {
     const allocator = std.testing.allocator;

@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    name: Test - ${{ matrix.os }} - Zig ${{ matrix.zig-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        zig-version: ['0.15.0']
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ matrix.zig-version }}
+      
+      - name: Verify Zig installation
+        run: zig version
+      
+      - name: Build
+        run: zig build
+      
+      - name: Build codegen
+        run: zig build codegen
+      
+      - name: Run tests
+        run: zig build test
+      
+      - name: Run benchmarks (Debug)
+        run: zig build benchmark
+      
+      - name: Run benchmarks (ReleaseFast)
+        run: zig build benchmark -Doptimize=ReleaseFast
+
+  test-consumer:
+    name: Test Consumer Project
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.15.0'
+      
+      - name: Build test_consumer
+        working-directory: test_consumer
+        run: zig build
+      
+      - name: Run test_consumer
+        working-directory: test_consumer
+        run: zig build run
+
+  lint:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.15.0'
+      
+      - name: Check formatting
+        run: zig fmt --check src/ tests/

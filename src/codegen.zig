@@ -268,12 +268,17 @@ const PropertyDef = struct {
 const ParsedClass = struct {
     name: []const u8,
     parent_name: ?[]const u8,
+    mixin_names: [][]const u8,
     fields: []FieldDef,
     methods: []MethodDef,
     properties: []PropertyDef,
     allocator: std.mem.Allocator,
 
     fn deinit(self: *ParsedClass) void {
+        for (self.mixin_names) |mixin_name| {
+            self.allocator.free(mixin_name);
+        }
+        self.allocator.free(self.mixin_names);
         self.allocator.free(self.fields);
         self.allocator.free(self.methods);
         self.allocator.free(self.properties);
@@ -283,6 +288,7 @@ const ParsedClass = struct {
 const ClassInfo = struct {
     name: []const u8,
     parent_name: ?[]const u8,
+    mixin_names: [][]const u8, // List of mixin class references
     fields: []FieldDef,
     methods: []MethodDef,
     properties: []PropertyDef,

@@ -199,16 +199,10 @@ pub fn class(comptime definition: type) type {
 
     _ = config; // Reserved for future use
 
-    // Check for inheritance declaration
-    const Parent = if (@hasDecl(definition, "extends"))
-        definition.extends
-    else
-        null;
-
-    // If inheriting, merge parent and child fields to create a valid parse-time type
-    // This allows source files to type-check during the codegen scan phase
-    if (Parent) |P| {
-        return mergeFields(P, definition);
+    // Check for inheritance declaration and merge fields if needed
+    if (@hasDecl(definition, "extends")) {
+        const Parent = definition.extends;
+        return mergeFields(Parent, definition);
     } else {
         // No inheritance - return definition as-is
         return definition;

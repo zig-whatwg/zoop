@@ -750,8 +750,8 @@ fn processSourceFileWithRegistry(
 
         const class_keyword_start = blk: {
             var i = next_start;
-            while (i > 0) : (i -= 1) {
-                if (source[i] == '\n' or i == 0) {
+            while (i > last_class_end) : (i -= 1) {
+                if (source[i] == '\n' or i == last_class_end) {
                     const line_start = if (source[i] == '\n') i + 1 else i;
                     const line = std.mem.trim(u8, source[line_start..next_start], " \t");
                     if (std.mem.startsWith(u8, line, "pub const") or std.mem.startsWith(u8, line, "const")) {
@@ -762,7 +762,9 @@ fn processSourceFileWithRegistry(
             break :blk next_start;
         };
 
-        const segment = try filterZoopImport(allocator, source[last_class_end..class_keyword_start]);
+        // Ensure we don't go backwards
+        const safe_start = @max(last_class_end, class_keyword_start);
+        const segment = try filterZoopImport(allocator, source[last_class_end..safe_start]);
         defer allocator.free(segment);
         try output.appendSlice(allocator, segment);
 
@@ -1573,8 +1575,6 @@ fn generateEnhancedClassWithRegistry(
             parent_type: []const u8,
         };
 
-        var init_method: ?MethodDef = null;
-        var deinit_method: ?MethodDef = null;
         var parent_methods: std.ArrayList(ParentMethod) = .empty;
         defer parent_methods.deinit(allocator);
 
@@ -1593,42 +1593,29 @@ fn generateEnhancedClassWithRegistry(
             }
 
             for (parent_info.methods) |method| {
-                const is_init = std.mem.eql(u8, method.name, "init");
-                const is_deinit = std.mem.eql(u8, method.name, "deinit");
+                // Skip methods that child has already defined (override detection)
+                if (child_method_names.contains(method.name)) continue;
 
-                if (is_init and !child_method_names.contains("init") and init_method == null) {
-                    init_method = method;
-                } else if (is_deinit and !child_method_names.contains("deinit") and deinit_method == null) {
-                    deinit_method = method;
-                } else if (!child_method_names.contains(method.name) and !method.is_static and !is_init and !is_deinit) {
-                    try parent_methods.append(allocator, .{
-                        .method = method,
-                        .parent_type = parent_info.name,
-                    });
-                }
+                // Skip static methods EXCEPT init and deinit
+                const is_init_or_deinit = std.mem.eql(u8, method.name, "init") or std.mem.eql(u8, method.name, "deinit");
+                if (method.is_static and !is_init_or_deinit) continue;
+
+                // Copy all methods including init and deinit
+                try parent_methods.append(allocator, .{
+                    .method = method,
+                    .parent_type = parent_info.name,
+                });
             }
 
             current_parent = parent_info.parent_name;
             current_file_path = parent_info.file_path;
         }
 
-        if (init_method) |init| {
-            const adapted = try adaptInitDeinit(allocator, init.source, parsed.name);
-            defer allocator.free(adapted);
-            try writer.print("    {s}\n", .{adapted});
-        }
-
-        if (deinit_method) |deinit| {
-            const adapted = try adaptInitDeinit(allocator, deinit.source, parsed.name);
-            defer allocator.free(adapted);
-            try writer.print("    {s}\n", .{adapted});
-        }
-
         for (parent_methods.items) |parent_method| {
             const method = parent_method.method;
             const parent_type = parent_method.parent_type;
 
-            // Copy and rewrite parent method (same as mixins - no casting!)
+            // Copy and rewrite parent method (including init/deinit)
             const rewritten_method = try rewriteMixinMethod(allocator, method.source, parent_type, parsed.name);
             defer allocator.free(rewritten_method);
 
@@ -1647,14 +1634,11 @@ fn generateEnhancedClassWithRegistry(
                 // Skip if child already has this method (child overrides mixin)
                 if (child_method_names.contains(method.name)) continue;
 
-                // Skip init/deinit - those are handled specially
-                if (std.mem.eql(u8, method.name, "init") or std.mem.eql(u8, method.name, "deinit")) continue;
+                // Skip static methods EXCEPT init and deinit
+                const is_init_or_deinit = std.mem.eql(u8, method.name, "init") or std.mem.eql(u8, method.name, "deinit");
+                if (method.is_static and !is_init_or_deinit) continue;
 
-                // Skip static methods
-                if (method.is_static) continue;
-
-                // Need to rewrite the method signature to replace mixin type with child type
-                // e.g., "self: *Timestamped" -> "self: *User"
+                // Copy all methods including init/deinit (with type rewriting)
                 const rewritten_method = try rewriteMixinMethod(allocator, method.source, mixin_info.name, parsed.name);
                 defer allocator.free(rewritten_method);
 

@@ -25,6 +25,8 @@ examples_out/
 .DS_Store
 *.bak
 *.bak2
+*.backup
+*.tmp
 
 # Editor directories
 .vscode/

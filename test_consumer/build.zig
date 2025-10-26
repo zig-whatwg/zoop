@@ -9,13 +9,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    
+
     const codegen_exe = zoop_dep.artifact("zoop-codegen");
     const gen_cmd = b.addRunArtifact(codegen_exe);
     gen_cmd.addArgs(&.{
-        "--source-dir", "src",
-        "--output-dir", "src_generated",
-        "--method-prefix", "call_",
+        "--source-dir",    "src",
+        "--output-dir",    "src_generated",
         "--getter-prefix", "get_",
         "--setter-prefix", "set_",
     });
@@ -29,15 +28,15 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    
+
     const zoop_module = zoop_dep.module("zoop");
     exe.root_module.addImport("zoop", zoop_module);
-    
+
     // Make exe depend on code generation
     exe.step.dependOn(&gen_cmd.step);
 
     b.installArtifact(exe);
-    
+
     // Add run step
     const run_cmd = b.addRunArtifact(exe);
     const run_step = b.step("run", "Run the test consumer");

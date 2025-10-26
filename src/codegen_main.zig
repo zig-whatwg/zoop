@@ -19,10 +19,11 @@
 //!
 //! ### Optional Arguments
 //!
-//! - `--method-prefix <str>` - Prefix for inherited method wrappers (default: "call_")
 //! - `--getter-prefix <str>` - Prefix for property getters (default: "get_")
 //! - `--setter-prefix <str>` - Prefix for property setters (default: "set_")
 //! - `-h, --help` - Show help message
+//!
+//! Note: Inherited methods are copied directly without prefixes.
 //!
 //! ## Security
 //!
@@ -45,7 +46,6 @@
 //! gen_cmd.addArgs(&.{
 //!     "--source-dir", "src",
 //!     "--output-dir", ".zig-cache/zoop-generated",
-//!     "--method-prefix", "call_",
 //! });
 //! exe.step.dependOn(&gen_cmd.step);
 //! ```
@@ -114,10 +114,12 @@ pub fn main() !void {
                 return error.MissingValue;
             };
         } else if (std.mem.eql(u8, arg, "--method-prefix")) {
-            config.method_prefix = args.next() orelse {
+            // Deprecated: method_prefix is no longer used
+            _ = args.next() orelse {
                 std.debug.print("Error: --method-prefix requires a value\n", .{});
                 return error.MissingValue;
             };
+            std.debug.print("Warning: --method-prefix is deprecated and no longer used. Methods are copied directly without prefixes.\n", .{});
         } else if (std.mem.eql(u8, arg, "--getter-prefix")) {
             config.getter_prefix = args.next() orelse {
                 std.debug.print("Error: --getter-prefix requires a value\n", .{});
@@ -210,9 +212,6 @@ fn printHelp() void {
         \\                            Creates same directory structure as source
         \\
         \\OPTIONAL ARGUMENTS:
-        \\    --method-prefix <str>   Prefix for inherited methods (default: "call_")
-        \\                            Example: employee.call_greet()
-        \\
         \\    --getter-prefix <str>   Prefix for property getters (default: "get_")
         \\                            Example: user.get_email()
         \\
@@ -221,19 +220,21 @@ fn printHelp() void {
         \\
         \\    -h, --help              Show this help message
         \\
+        \\NOTES:
+        \\    - Inherited methods are copied directly without prefixes
+        \\    - Only property accessors use configurable prefixes
+        \\
         \\EXAMPLES:
-        \\    # Standard usage with default prefixes
+        \\    # Standard usage with default property prefixes
         \\    zoop-codegen --source-dir src --output-dir .zig-cache/zoop-generated
         \\
-        \\    # Custom prefixes for different naming conventions
+        \\    # Custom property prefixes
         \\    zoop-codegen --source-dir src --output-dir generated \
-        \\        --method-prefix "invoke_" \
         \\        --getter-prefix "read_" \
         \\        --setter-prefix "write_"
         \\
-        \\    # No prefixes (empty strings)
+        \\    # No property prefixes
         \\    zoop-codegen --source-dir src --output-dir generated \
-        \\        --method-prefix "" \
         \\        --getter-prefix "" \
         \\        --setter-prefix ""
         \\

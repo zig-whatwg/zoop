@@ -8,13 +8,11 @@ const std = @import("std");
 
 /// Configuration for generated method and property naming.
 ///
-/// This struct defines the prefixes used when generating wrapper methods
-/// for inherited methods and property accessors. These settings are passed
-/// to `zoop-codegen` via command-line arguments in your build.zig.
+/// This struct defines the prefixes used when generating property accessor methods.
+/// These settings are passed to `zoop-codegen` via command-line arguments in your build.zig.
 ///
 /// ## Fields
 ///
-/// - `method_prefix` - Prefix for inherited method wrappers (default: "call_")
 /// - `getter_prefix` - Prefix for property getters (default: "get_")
 /// - `setter_prefix` - Prefix for property setters (default: "set_")
 ///
@@ -24,18 +22,19 @@ const std = @import("std");
 ///
 /// ```zig
 /// const Employee = struct {
-///     super: Person,
+///     name: []const u8,  // Flattened from Person
+///     employee_id: u32,
 ///
-///     // Inherited method wrapper
-///     pub inline fn call_greet(self: *Employee) void {
-///         self.super.greet();
+///     // Inherited methods copied directly (no prefix)
+///     pub fn greet(self: *Employee) void {
+///         std.debug.print("Hello, I'm {s}\n", .{self.name});
 ///     }
 /// };
 ///
 /// const User = struct {
 ///     email: []const u8,
 ///
-///     // Property accessors
+///     // Property accessors with prefixes
 ///     pub inline fn get_email(self: *const User) []const u8 { return self.email; }
 ///     pub inline fn set_email(self: *User, value: []const u8) void { self.email = value; }
 /// };
@@ -43,11 +42,10 @@ const std = @import("std");
 ///
 /// ## Customization
 ///
-/// Set custom prefixes in build.zig:
+/// Set custom property prefixes in build.zig:
 ///
 /// ```zig
 /// gen_cmd.addArgs(&.{
-///     "--method-prefix", "invoke_",  // employee.invoke_greet()
 ///     "--getter-prefix", "read_",    // user.read_email()
 ///     "--setter-prefix", "write_",   // user.write_email(...)
 /// });
@@ -57,7 +55,6 @@ const std = @import("std");
 ///
 /// ```zig
 /// gen_cmd.addArgs(&.{
-///     "--method-prefix", "",  // employee.greet()
 ///     "--getter-prefix", "",  // user.email()
 ///     "--setter-prefix", "",  // user.email(...)
 /// });
@@ -65,13 +62,12 @@ const std = @import("std");
 ///
 /// ## Notes
 ///
-/// - Prefixes help avoid naming conflicts between your methods and generated ones
-/// - Empty prefixes are valid but can cause collisions if you have methods
-///   with the same names as parent methods
+/// - Inherited methods are always copied directly without prefixes
+/// - Property accessor prefixes help avoid naming conflicts
+/// - Empty prefixes are valid but require careful naming to avoid collisions
 /// - This struct is for documentation only; actual configuration happens
 ///   via command-line arguments to `zoop-codegen`
 pub const ClassConfig = struct {
-    method_prefix: []const u8 = "call_",
     getter_prefix: []const u8 = "get_",
     setter_prefix: []const u8 = "set_",
 };
@@ -148,10 +144,10 @@ pub const ClassConfig = struct {
 ///    super: ParentType,
 ///    ```
 ///
-/// 2. **Wrapper methods** for inherited methods (unless overridden):
+/// 2. **Inherited methods** copied directly (unless overridden):
 ///    ```zig
-///    pub inline fn call_parentMethod(self: *ChildType, args...) ReturnType {
-///        return self.super.parentMethod(args);
+///    pub fn parentMethod(self: *ChildType, args...) ReturnType {
+///        // Method body copied from parent with type names rewritten
 ///    }
 ///    ```
 ///
@@ -355,7 +351,6 @@ fn mergeFields(comptime ParentType: ?type, comptime mixins: anytype, comptime Ch
 
 test "ClassConfig defaults" {
     const config = ClassConfig{};
-    try std.testing.expectEqualStrings("call_", config.method_prefix);
     try std.testing.expectEqualStrings("get_", config.getter_prefix);
     try std.testing.expectEqualStrings("set_", config.setter_prefix);
 }

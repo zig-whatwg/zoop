@@ -92,7 +92,6 @@ pub fn build(b: *std.Build) void {
     gen_cmd.addArgs(&.{
         "--source-dir", "src",
         "--output-dir", ".zig-cache/zoop-generated",
-        "--method-prefix", "call_",
         "--getter-prefix", "get_",
         "--setter-prefix", "set_",
     });
@@ -166,7 +165,7 @@ pub fn build(b: *std.Build) void {
     gen_cmd.addArgs(&.{
         "--source-dir", ".codegen-input",      // Intermediate files
         "--output-dir", "src-generated",        // Review here
-        "--method-prefix", "",                  // Often cleaner for FFI
+        "                  // Often cleaner for FFI
         "--getter-prefix", "get_",
         "--setter-prefix", "set_",
     });
@@ -297,7 +296,7 @@ var dog = Dog{
 
 dog.speak();                  // Dog's override: "Max barks!"
 dog.fetch();                  // Dog's method
-dog.call_speak();             // ERROR: Can't call overridden parent method
+dog.speak();             // ERROR: Can't call overridden parent method
 std.debug.print("{}\n", .{dog.age});  // Direct field access: 3
 ```
 
@@ -383,7 +382,7 @@ var player = Player{
     .health = 100,
 };
 
-try player.call_save();  // Inherited from Entity (copied method)
+try player.save();  // Inherited from Entity (copied method)
 ```
 
 ### Multi-Level Inheritance
@@ -463,7 +462,7 @@ const age = user.getAge();
 const json = try user.toJson(allocator);
 
 // Parent methods work (copied):
-user.call_save();
+user.save();
 ```
 
 **How it works:**
@@ -502,7 +501,7 @@ Control method naming:
 
 ```zig
 gen_cmd.addArgs(&.{
-    "--method-prefix", "call_",   // inherited_method → call_inherited_method
+    "   // inherited_method → call_inherited_method
     "--getter-prefix", "get_",    // property → get_property
     "--setter-prefix", "set_",    // property → set_property
 });
@@ -512,7 +511,7 @@ gen_cmd.addArgs(&.{
 
 ```zig
 // Default (call_, get_, set_)
-employee.call_greet();
+employee.greet();
 user.get_email();
 user.set_email("new@example.com");
 
@@ -607,7 +606,7 @@ const zoop = @import("zoop");
 const gen_cmd = zoop.createCodegenStep(b, codegen_exe, .{
     .source_dir = "src",
     .output_dir = ".zig-cache/zoop-generated",
-    .method_prefix = "call_",
+    
     .getter_prefix = "get_",
     .setter_prefix = "set_",
 });

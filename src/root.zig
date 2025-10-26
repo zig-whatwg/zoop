@@ -44,7 +44,7 @@
 //!     pub fn speak(self: *Dog) void { /* your override */ }
 //!
 //!     // Auto-generated wrapper methods (inlined, zero-cost)
-//!     pub inline fn call_speak(self: *Dog) void {
+//!     pub inline fn speak(self: *Dog) void {
 //!         self.super.speak();
 //!     }
 //! };
@@ -149,7 +149,7 @@ const std = @import("std");
 ///
 /// For child classes, Zoop generates:
 /// 1. `super: ParentType` field (embedded parent)
-/// 2. Wrapper methods like `call_parentMethod()` for inherited methods
+/// 2. Wrapper methods like `parentMethod()` for inherited methods
 /// 3. Property getters/setters based on `properties` declaration
 ///
 /// All generated methods are `inline`, resulting in zero runtime overhead.
@@ -190,7 +190,7 @@ pub const class = @import("class.zig").class;
 ///
 /// **Default prefixes:**
 /// ```zig
-/// employee.call_greet();      // Inherited method
+/// employee.greet();      // Inherited method
 /// user.get_email();           // Property getter
 /// user.set_email("new@...");  // Property setter
 /// ```

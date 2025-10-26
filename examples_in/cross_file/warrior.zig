@@ -25,7 +25,14 @@ pub const Warrior = zoop.class(struct {
 
     pub fn init(id_val: u64, timestamp: u64, warrior_name: []const u8, weapon_name: []const u8) Warrior {
         return Warrior{
-            .super = player.Player.init(id_val, timestamp, warrior_name, 150),
+            .id = id_val,
+            .created_at = timestamp,
+            .active = true,
+            .name = warrior_name,
+            .health = 150,
+            .max_health = 150,
+            .level = 1,
+            .experience = 0,
             .weapon = weapon_name,
             .armor = 50,
             .rage = 0,
@@ -38,7 +45,7 @@ pub const Warrior = zoop.class(struct {
         const damage = self.strength + (self.rage / 10);
         self.rage = @min(self.rage + 10, 100);
         std.debug.print("{s} attacks {s} with {s} for {} damage! (Rage: {})\n", .{
-            self.super.name,
+            self.name,
             target_name,
             self.weapon,
             damage,
@@ -50,7 +57,7 @@ pub const Warrior = zoop.class(struct {
         const damage_reduction = self.defense + self.armor;
         self.rage = @max(self.rage -| 5, 0);
         std.debug.print("{s} defends! (Damage reduction: {}, Rage: {})\n", .{
-            self.super.name,
+            self.name,
             damage_reduction,
             self.rage,
         });
@@ -61,12 +68,12 @@ pub const Warrior = zoop.class(struct {
             self.rage = 100;
             const bonus_damage = self.strength * 2;
             std.debug.print("{s} goes BERSERK! Bonus damage: {}\n", .{
-                self.super.name,
+                self.name,
                 bonus_damage,
             });
         } else {
             std.debug.print("{s} needs more rage! (Current: {}/50)\n", .{
-                self.super.name,
+                self.name,
                 self.rage,
             });
         }
@@ -74,11 +81,11 @@ pub const Warrior = zoop.class(struct {
 
     pub fn display(self: *const Warrior) void {
         std.debug.print("Warrior: {s} (ID: {}, Level: {}, HP: {}/{}, Weapon: {s}, Armor: {}, Rage: {}, STR: {}, DEF: {})\n", .{
-            self.super.super.name,
-            self.super.super.super.id,
-            self.super.level,
-            self.super.health,
-            self.super.max_health,
+            self.name,
+            self.id,
+            self.level,
+            self.health,
+            self.max_health,
             self.weapon,
             self.armor,
             self.rage,

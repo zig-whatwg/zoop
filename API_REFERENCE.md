@@ -33,7 +33,6 @@ pub fn build(b: *std.Build) void {
     zoop.build(b, exe, .{
         .source_dir = "src",
         .output_dir = "zig-cache/zoop-generated",
-        .method_prefix = "call_",
         .getter_prefix = "get_",
         .setter_prefix = "set_",
     });
@@ -68,7 +67,6 @@ Configuration struct for code generation.
 pub const BuildConfig = struct {
     source_dir: []const u8 = "src",
     output_dir: []const u8 = "zig-cache/zoop-generated",
-    method_prefix: []const u8 = "call_",
     getter_prefix: []const u8 = "get_",
     setter_prefix: []const u8 = "set_",
 };
@@ -77,7 +75,6 @@ pub const BuildConfig = struct {
 **Fields:**
 - `source_dir` - Directory to scan for class definitions (default: `"src"`)
 - `output_dir` - Where to write generated code (default: `"zig-cache/zoop-generated"`)
-- `method_prefix` - Prefix for inherited methods (default: `"call_"`)
 - `getter_prefix` - Prefix for property getters (default: `"get_"`)
 - `setter_prefix` - Prefix for property setters (default: `"set_"`)
 
@@ -91,16 +88,14 @@ zoop.build(b, exe, .{
     .source_dir = "lib",
 });
 
-// No prefixes
+// No property prefixes
 zoop.build(b, exe, .{
-    .method_prefix = "",
     .getter_prefix = "",
     .setter_prefix = "",
 });
 
-// Custom prefixes
+// Custom property prefixes
 zoop.build(b, exe, .{
-    .method_prefix = "invoke_",
     .getter_prefix = "read_",
     .setter_prefix = "write_",
 });
@@ -216,14 +211,14 @@ var mgr = Manager{
     .department = "Engineering",
 };
 
-mgr.greet();       // Uses Manager's override (no prefix)
-mgr.call_work();   // Inherited from Employee (with prefix)
+mgr.greet();  // Uses Manager's override
+mgr.work();   // Inherited from Employee
 ```
 
 **Override Detection:**
 - If child defines a method with same name as parent, child's version is used
-- No `call_` prefix is added to overridden methods
-- Overridden methods are called directly without prefix
+- Parent methods are not copied if child overrides them
+- All methods are called directly without prefixes
 
 ---
 
@@ -266,7 +261,7 @@ const User = struct {
     name: []const u8,
     email: []const u8,
     
-    pub inline fn call_save(self: *User) void { ... }  // From parent (copied)
+    pub fn save(self: *User) void { ... }  // From parent (copied)
     pub fn updateTimestamp(self: *User) void { ... }    // From mixin (type rewritten)
     pub fn toJson(self: *const User, ...) ![]const u8 { ... }  // From mixin
 };
@@ -344,23 +339,22 @@ zoop-codegen --source-dir <dir> --output-dir <dir> [OPTIONS]
 - `--output-dir <dir>` - Directory to write generated code
 
 **Optional Arguments:**
-- `--method-prefix <str>` - Prefix for inherited methods (default: `"call_"`)
 - `--getter-prefix <str>` - Prefix for property getters (default: `"get_"`)
 - `--setter-prefix <str>` - Prefix for property setters (default: `"set_"`)
 - `-h, --help` - Show help message
 
 **Examples:**
 ```bash
-# Default prefixes
+# Default property prefixes
 zoop-codegen --source-dir src --output-dir zig-cache/zoop-generated
 
-# No prefixes
+# No property prefixes
 zoop-codegen --source-dir src --output-dir generated \
-    --method-prefix "" --getter-prefix "" --setter-prefix ""
+    --getter-prefix "" --setter-prefix ""
 
-# Custom prefixes
+# Custom property prefixes
 zoop-codegen --source-dir lib --output-dir gen \
-    --method-prefix "invoke_" --getter-prefix "read_" --setter-prefix "write_"
+    --getter-prefix "read_" --setter-prefix "write_"
 ```
 
 **Build:**
@@ -499,32 +493,31 @@ myField: u32,
 
 ### Prefix Configuration
 
-**For maximum clarity**, use descriptive prefixes:
+**For maximum clarity**, use descriptive property prefixes:
 ```zig
 zoop.build(b, exe, .{
-    .method_prefix = "call_",
     .getter_prefix = "get_",
     .setter_prefix = "set_",
 });
 ```
 
-**For minimal syntax**, use no prefixes:
+**For minimal syntax**, use no property prefixes:
 ```zig
 zoop.build(b, exe, .{
-    .method_prefix = "",
     .getter_prefix = "",
     .setter_prefix = "",
 });
 ```
 
-**For domain-specific naming**, use custom prefixes:
+**For domain-specific naming**, use custom property prefixes:
 ```zig
 zoop.build(b, exe, .{
-    .method_prefix = "invoke_",
     .getter_prefix = "read_",
     .setter_prefix = "write_",
 });
 ```
+
+**Note:** Inherited methods are always copied directly without prefixes. Only property accessors use configurable prefixes.
 
 ### Error Handling
 

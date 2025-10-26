@@ -17,7 +17,7 @@ const Employee = zoop.class(struct {
     }
 });
 
-employee.call_greet();  // Inherited from Person - zero overhead
+employee.greet();  // Inherited from Person - zero overhead
 ```
 
 > **Status:** Beta - Core features complete and tested. Production-ready for real projects.
@@ -58,18 +58,18 @@ employee.call_greet();  // Inherited from Person - zero overhead
 
 ### Core
 
-- ✅ **Single & multi-level inheritance** - Unlimited depth with embedded `super` fields
+- ✅ **Single & multi-level inheritance** - Unlimited depth with flattened parent fields
 - ✅ **Cross-file inheritance** - Import and extend classes from any module
 - ✅ **Mixins** - Multiple inheritance via composition with field and method flattening
 - ✅ **Properties** - Auto-generated getters/setters with `read_only`/`read_write` access
-- ✅ **Method forwarding** - Automatic delegation with configurable prefixes
+- ✅ **Method copying** - Inherited methods copied directly without prefixes
 - ✅ **Override detection** - No duplicate method generation
 - ✅ **Init/deinit inheritance** - Parent constructors/destructors automatically adapted
 
 ### Build & Tooling
 
 - ✅ **Build-time codegen** - `zoop-codegen` executable integrates with Zig build
-- ✅ **Configurable output** - Control source/output directories, prefixes
+- ✅ **Configurable output** - Control source/output directories, property accessor prefixes
 - ✅ **Manual mode** - Optional: generate once, edit manually (perfect for WebIDL/FFI)
 - ✅ **Circular dependency detection** - Catches inheritance cycles early
 
@@ -127,7 +127,6 @@ pub fn build(b: *std.Build) void {
     gen_cmd.addArgs(&.{
         "--source-dir", "src",
         "--output-dir", ".zig-cache/zoop-generated",
-        "--method-prefix", "call_",
         "--getter-prefix", "get_",
         "--setter-prefix", "set_",
     });
@@ -299,23 +298,23 @@ const User = struct {
 
 ### Method Prefixes
 
-Control naming to avoid conflicts:
+Inherited methods are copied directly without prefixes. Property accessors use configurable prefixes:
 
 ```zig
-// Default: call_, get_, set_
-employee.call_greet();
+// Inherited methods - no prefix
+employee.greet();  // Copied from Person
+
+// Properties - default prefixes: get_, set_
 user.get_email();
 user.set_email("new@example.com");
 
-// No prefixes: --method-prefix "" --getter-prefix "" --setter-prefix ""
-employee.greet();
-user.email();
-user.email("new@example.com");
-
-// Custom: --method-prefix "invoke_" --getter-prefix "read_" --setter-prefix "write_"
-employee.invoke_greet();
+// Custom property prefixes: --getter-prefix "read_" --setter-prefix "write_"
 user.read_email();
 user.write_email("new@example.com");
+
+// No property prefixes: --getter-prefix "" --setter-prefix ""
+user.email();
+user.email("new@example.com");
 ```
 
 ---
@@ -349,8 +348,8 @@ var player = Player{
     .username = "player1",
 };
 
-player.call_save();  // Entity.save() (copied and type-rewritten)
-player.call_move();  // Character.move() (copied and type-rewritten)
+player.save();  // Entity.save() (copied and type-rewritten)
+player.move();  // Character.move() (copied and type-rewritten)
 ```
 
 ### Cross-File Inheritance
@@ -419,7 +418,7 @@ const User = struct {
     name: []const u8,
     email: []const u8,
     
-    pub inline fn call_save(self: *User) void { ... }  // From Entity (copied)
+    pub fn save(self: *User) void { ... }  // From Entity (copied)
     pub fn updateTimestamp(self: *User) void { ... }    // From Timestamped (type rewritten!)
     pub fn toJson(self: *const User, ...) ![]const u8 { ... }  // From Serializable
 };
@@ -433,7 +432,7 @@ var user = User{
 };
 
 user.updateTimestamp();  // Mixin method
-user.call_save();        // Parent method
+user.save();            // Parent method
 ```
 
 **How mixins work:**
@@ -544,14 +543,14 @@ See [CONSUMER_USAGE.md](CONSUMER_USAGE.md) for complete examples.
 
 ```zig
 // Your code:
-employee.call_greet();
+employee.greet();
 
 // Generated (copied from parent):
 pub fn greet(self: *Employee) void {
     std.debug.print("Hello, I'm {s}\n", .{self.name});
 }
 
-// No overhead - method is copied, not delegated
+// No overhead - method is copied directly, not delegated
 ```
 
 **Benchmark results** (see `tests/performance_test.zig`):

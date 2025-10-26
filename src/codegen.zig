@@ -88,7 +88,6 @@ const PUB_CONST_MIXINS_LEN = "pub const mixins".len; // = 16
 ///
 /// See src/root.zig or src/class.zig for detailed documentation on usage.
 pub const ClassConfig = struct {
-    method_prefix: []const u8 = "call_",
     getter_prefix: []const u8 = "get_",
     setter_prefix: []const u8 = "set_",
 };

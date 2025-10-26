@@ -25,7 +25,9 @@ pub const Player = zoop.class(struct {
 
     pub fn init(id_val: u64, timestamp: u64, player_name: []const u8, max_hp: i32) Player {
         return Player{
-            .super = base.Entity.init(id_val, timestamp),
+            .id = id_val,
+            .created_at = timestamp,
+            .active = true,
             .name = player_name,
             .health = max_hp,
             .max_health = max_hp,
@@ -66,7 +68,7 @@ pub const Player = zoop.class(struct {
     pub fn display(self: *const Player) void {
         std.debug.print("Player: {s} (ID: {}, Level: {}, HP: {}/{}, XP: {})\n", .{
             self.name,
-            self.super.id,
+            self.id,
             self.level,
             self.health,
             self.max_health,

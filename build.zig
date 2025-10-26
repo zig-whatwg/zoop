@@ -4,7 +4,6 @@ const std = @import("std");
 pub const CodegenConfig = struct {
     source_dir: []const u8 = "src",
     output_dir: []const u8 = ".zig-cache/zoop-generated",
-    method_prefix: []const u8 = "call_",
     getter_prefix: []const u8 = "get_",
     setter_prefix: []const u8 = "set_",
 };
@@ -22,8 +21,6 @@ pub fn createCodegenStep(
         config.source_dir,
         "--output-dir",
         config.output_dir,
-        "--method-prefix",
-        config.method_prefix,
         "--getter-prefix",
         config.getter_prefix,
         "--setter-prefix",

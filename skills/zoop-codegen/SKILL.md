@@ -1,16 +1,23 @@
 # Zoop Code Generation Skill
 
-## Purpose
+## When to use this skill
 
-Work effectively with Zoop's code generator to modify field/method generation or add new features.
-
-## When to Use
-
+Load this skill automatically when:
 - Modifying how fields are generated
 - Updating method copying logic
 - Adding new codegen features
 - Debugging generated code issues
 - Understanding the build pipeline
+- Working with `src/codegen.zig` or `src/codegen_main.zig`
+
+## What this skill provides
+
+This skill ensures Claude can effectively work with Zoop's code generator by:
+- Navigating the generation pipeline and key functions
+- Understanding data structures (ParsedClass, MethodDef, Registry)
+- Following memory management patterns (defer, .empty, allocator param)
+- Locating and modifying field/method generation logic
+- Avoiding common pitfalls (string handling, type names)
 
 ## Key Files
 
@@ -194,6 +201,59 @@ Already supported via CLI:
 ```bash
 --method-prefix "my_prefix_"
 ```
+
+## Common Anti-Patterns to Avoid
+
+### ❌ Assuming Methods Call Parent via `.super`
+
+```zig
+// ❌ WRONG (v0.1.0 approach - removed)
+try writer.print("return self.super.{s}(", .{method.name});
+
+// ✅ CORRECT (v0.2.0 approach - copy method)
+const rewritten = try rewriteMixinMethod(allocator, method.source, parent_type, child_type);
+try writer.print("{s}\n", .{rewritten});
+```
+
+### ❌ Forgetting `defer` for Allocations
+
+```zig
+// ❌ WRONG
+const str = try allocator.dupe(u8, "text");
+// Leaks if function returns early!
+
+// ✅ CORRECT
+const str = try allocator.dupe(u8, "text");
+defer allocator.free(str);  // Always cleaned up
+```
+
+### ❌ Using `.init()` for ArrayList
+
+```zig
+// ❌ WRONG (Zig 0.15+)
+var list = ArrayList(T).init(allocator);
+
+// ✅ CORRECT
+var list: ArrayList(T) = .empty;
+defer list.deinit(allocator);
+try list.append(allocator, item);  // Pass allocator!
+```
+
+## Quick Reference
+
+**Pipeline**: codegen_main.zig → codegen.zig → .zig-cache/zoop-generated/
+
+**Key Functions**:
+- `generateAllClasses` (~118) - Orchestration
+- `parseClassDefinition` (~720) - Parsing
+- `generateEnhancedClassWithRegistry` (~1248) - Generation
+- `rewriteMixinMethod` (~1665) - Type rewriting
+
+**Memory**: Use `defer`, `.empty` for lists, pass allocator to `append`
+
+**Strings**: Byte offsets, use `std.mem.indexOfPos`, slices reference original
+
+**Testing**: Rebuild → `zig build test` → check `.zig-cache/zoop-generated/`
 
 ## References
 

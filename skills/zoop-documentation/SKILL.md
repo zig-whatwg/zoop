@@ -1,16 +1,23 @@
 # Zoop Documentation Skill
 
-## Purpose
+## When to use this skill
 
-Update Zoop's documentation consistently and accurately across all files.
-
-## When to Use
-
+Load this skill automatically when:
 - After architectural changes
 - When adding new features
 - Fixing documentation bugs
 - Ensuring terminology consistency
 - Updating examples
+- Working with any `.md` file in the project
+
+## What this skill provides
+
+This skill ensures Claude maintains documentation quality by:
+- Enforcing critical rules (no `.super`, no `@ptrCast`)
+- Following consistent terminology and style
+- Using proper code block structure with ✅/❌ patterns
+- Maintaining accuracy across all documentation files
+- Avoiding outdated examples from v0.1.0
 
 ## Documentation Files
 
@@ -298,6 +305,37 @@ npx markdown-link-check README.md
 - All examples rewritten
 - Core concepts section overhauled
 - Performance claims updated
+
+## Quick Reference
+
+**Critical Rules**:
+- NO `.super` field access (fields are flattened)
+- NO `@ptrCast` references (methods are copied)
+- Always use ✅/❌ for correct/incorrect examples
+
+**Terminology**:
+- "flattened" (not "embedded") for fields
+- "copied" (not "delegated") for methods
+- "zero overhead" (not "minimal overhead")
+
+**File Purposes**:
+- `README.md` - Quick start, features
+- `CONSUMER_USAGE.md` - Integration guide
+- `API_REFERENCE.md` - Complete API
+- `IMPLEMENTATION.md` - Architecture details
+
+**Search Commands**:
+```bash
+grep -r "\.super" --include="*.md" .
+grep -r "@ptrCast" --include="*.md" .
+```
+
+**Update Checklist**:
+- [ ] No `.super` references
+- [ ] No `@ptrCast` references
+- [ ] Terminology consistent
+- [ ] Examples compile
+- [ ] Links work
 
 ## References
 

@@ -1,16 +1,25 @@
 # Zoop Testing Skill
 
-## Purpose
+## When to use this skill
 
-Run tests, verify changes, and ensure code quality in Zoop development.
-
-## When to Use
-
+Load this skill automatically when:
 - After making code changes
 - Before committing
 - Adding new features
 - Debugging test failures
 - Performance validation
+- Working with files in `tests/` directory
+- Modifying `build.zig` test configuration
+
+## What this skill provides
+
+This skill ensures Claude can effectively test Zoop by:
+- Running the complete test suite (39 tests)
+- Understanding test categories and their purposes
+- Adding new tests correctly
+- Debugging test failures systematically
+- Validating zero-overhead performance claims
+- Ensuring memory safety and leak detection
 
 ## Quick Commands
 
@@ -280,6 +289,69 @@ echo "✓ All tests pass"
 - Ensure test file is in `tests/` directory
 - Check `build.zig` includes the test
 - Verify paths are relative to project root
+
+## Common Anti-Patterns to Avoid
+
+### ❌ Not Using `defer` for Cleanup
+
+```zig
+// ❌ BAD
+test "leaky test" {
+    var list = ArrayList(u8).init(allocator);
+    // Forgot defer - leaks memory!
+    try list.append(42);
+}
+
+// ✅ GOOD
+test "clean test" {
+    var list: ArrayList(u8) = .empty;
+    defer list.deinit(allocator);  // Always cleaned up
+    try list.append(allocator, 42);
+}
+```
+
+### ❌ Testing Generated Code Directly
+
+```zig
+// ❌ BAD - fragile to codegen changes
+const generated = @import("../.zig-cache/zoop-generated/example.zig");
+
+// ✅ GOOD - test behavior, not implementation
+test "inherited method works" {
+    var dog = Dog{ .name = "Max", .age = 3, .breed = "Lab" };
+    dog.eat();  // Should compile and work
+}
+```
+
+### ❌ Benchmarks Without Assertions
+
+```zig
+// ❌ BAD - just prints, doesn't validate
+std.debug.print("{} ns/op\n", .{ns_per_op});
+
+// ✅ GOOD - validates performance claim
+std.debug.print("{} ns/op\n", .{ns_per_op});
+try std.testing.expect(ns_per_op < 10);  // Must be < 10ns
+```
+
+## Quick Reference
+
+**Run all tests**: `zig build test`
+
+**Run benchmarks**: `zig build benchmark` (20+ seconds)
+
+**Test count**: 39 tests across 7+ files
+
+**Key patterns**:
+- Use `std.testing.allocator` (detects leaks)
+- Always `defer` cleanup
+- Test behavior, not implementation
+- Validate performance with assertions
+
+**Debugging**:
+- Check `.zig-cache/zoop-generated/` for generated code
+- Add `std.debug.print` for inspection
+- Run single file: `zig test tests/file.zig`
 
 ## References
 

@@ -1266,15 +1266,19 @@ fn generateEnhancedClassWithRegistry(
         }
     }
 
-    // Generate mixin fields
-    for (parsed.mixin_names) |mixin_name| {
-        // Extract just the type name (handle cases like "base.Mixin")
-        const type_name = if (std.mem.lastIndexOfScalar(u8, mixin_name, '.')) |dot_pos|
-            mixin_name[dot_pos + 1 ..]
-        else
-            mixin_name;
+    // Generate mixin fields (flattened - copy fields directly from mixin classes)
+    for (parsed.mixin_names) |mixin_ref| {
+        const mixin_info = (try registry.resolveParentReference(mixin_ref, current_file)) orelse continue;
 
-        try writer.print("    mixin_{s}: {s},\n", .{ type_name, mixin_name });
+        // Copy all fields from mixin
+        for (mixin_info.fields) |field| {
+            try writer.print("    {s}: {s},\n", .{ field.name, field.type_name });
+        }
+
+        // Copy all property fields from mixin
+        for (mixin_info.properties) |prop| {
+            try writer.print("    {s}: {s},\n", .{ prop.name, prop.type_name });
+        }
     }
     if (parsed.mixin_names.len > 0 and (parsed.properties.len > 0 or parsed.fields.len > 0)) {
         try writer.writeAll("\n");
@@ -1296,14 +1300,15 @@ fn generateEnhancedClassWithRegistry(
         try writer.print("    {s}\n", .{method.source});
     }
 
+    // Track child method names for override detection (used by both parent and mixin generation)
+    var child_method_names = std.StringHashMap(void).init(allocator);
+    defer child_method_names.deinit();
+    for (parsed.methods) |method| {
+        try child_method_names.put(method.name, {});
+    }
+
     if (parsed.parent_name) |parent_ref| {
         if (parsed.methods.len > 0) try writer.writeAll("\n");
-
-        var child_method_names = std.StringHashMap(void).init(allocator);
-        defer child_method_names.deinit();
-        for (parsed.methods) |method| {
-            try child_method_names.put(method.name, {});
-        }
 
         var parent_field_names = std.StringHashMap(void).init(allocator);
         defer parent_field_names.deinit();
@@ -1420,6 +1425,30 @@ fn generateEnhancedClassWithRegistry(
 
             try writer.writeAll(");\n");
             try writer.writeAll("    }\n");
+        }
+    }
+
+    // Generate mixin methods (flattened - copy method source directly into child)
+    if (parsed.mixin_names.len > 0) {
+        if (parsed.methods.len > 0 or parsed.parent_name != null) try writer.writeAll("\n");
+
+        for (parsed.mixin_names) |mixin_ref| {
+            const mixin_info = (try registry.resolveParentReference(mixin_ref, current_file)) orelse continue;
+
+            for (mixin_info.methods) |method| {
+                // Skip if child already has this method (child overrides mixin)
+                if (child_method_names.contains(method.name)) continue;
+
+                // Skip init/deinit - those are handled specially
+                if (std.mem.eql(u8, method.name, "init") or std.mem.eql(u8, method.name, "deinit")) continue;
+
+                // Skip static methods
+                if (method.is_static) continue;
+
+                // Copy the method source directly - it will use self.field directly
+                // No need to rewrite since mixin fields are flattened into this class
+                try writer.print("    {s}\n", .{method.source});
+            }
         }
     }
 

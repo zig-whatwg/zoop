@@ -192,6 +192,10 @@ pub const Animal = zoop.class(struct {
     name: []const u8,
     age: u8,
     
+    pub fn init(name: []const u8, age: u8) Animal {
+        return .{ .name = name, .age = age };
+    }
+    
     pub fn speak(self: *Animal) void {
         std.debug.print("{s} makes a sound\n", .{self.name});
     }
@@ -201,6 +205,13 @@ pub const Dog = zoop.class(struct {
     pub const extends = Animal,  // Inheritance
     
     breed: []const u8,
+    
+    pub fn init(name: []const u8, age: u8, breed: []const u8) Dog {
+        return .{
+            .super = Animal.init(name, age),
+            .breed = breed,
+        };
+    }
     
     pub fn speak(self: *Dog) void {  // Override
         std.debug.print("{s} barks!\n", .{self.super.name});
@@ -212,18 +223,10 @@ pub const Dog = zoop.class(struct {
 });
 
 pub fn main() !void {
-    var dog = Dog{
-        .super = Animal{
-            .name = "Max",
-            .age = 3,
-        },
-        .breed = "Golden Retriever",
-    };
+    var dog = Dog.init("Max", 3, "Golden Retriever");
     
-    dog.speak();        // Uses Dog's override: "Max barks!"
-    dog.fetch();        // Dog's own method
-    
-    std.debug.print("Age: {}\n", .{dog.super.age});  // Direct parent field access
+    dog.speak();        // "Max barks!"
+    dog.fetch();        // "Max the Golden Retriever fetches"
 }
 ```
 
@@ -233,7 +236,6 @@ zig build run
 # Output:
 # Max barks!
 # Max the Golden Retriever fetches
-# Age: 3
 ```
 
 ---

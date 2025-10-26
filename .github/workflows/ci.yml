@@ -13,7 +13,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        zig-version: ['0.15.0']
+        zig-version: ['0.14.0']
     steps:
       - uses: actions/checkout@v4
       
@@ -49,7 +49,7 @@ jobs:
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: '0.15.0'
+          version: '0.14.0'
       
       - name: Build test_consumer
         working-directory: test_consumer
@@ -68,7 +68,7 @@ jobs:
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: '0.15.0'
+          version: '0.14.0'
       
       - name: Check formatting
         run: zig fmt --check src/ tests/

@@ -278,11 +278,11 @@ pub const Dog = zoop.class(struct {
     breed: []const u8,
     
     pub fn speak(self: *Dog) void {  // Override parent method
-        std.debug.print("{s} barks!\n", .{self.super.name});
+        std.debug.print("{s} barks!\n", .{self.name});
     }
     
     pub fn fetch(self: *Dog) void {  // New method
-        std.debug.print("{s} fetches\n", .{self.super.name});
+        std.debug.print("{s} fetches\n", .{self.name});
     }
 });
 ```
@@ -290,17 +290,15 @@ pub const Dog = zoop.class(struct {
 **Usage:**
 ```zig
 var dog = Dog{
-    .super = Animal{
-        .name = "Max",
-        .age = 3,
-    },
+    .name = "Max",        // From Animal (flattened)
+    .age = 3,             // From Animal (flattened)
     .breed = "Golden Retriever",
 };
 
 dog.speak();                  // Dog's override: "Max barks!"
 dog.fetch();                  // Dog's method
 dog.call_speak();             // ERROR: Can't call overridden parent method
-std.debug.print("{}\n", .{dog.super.age});  // Direct parent field access: 3
+std.debug.print("{}\n", .{dog.age});  // Direct field access: 3
 ```
 
 ### Properties
@@ -380,12 +378,12 @@ pub const Player = zoop.class(struct {
 **Usage:**
 ```zig
 var player = Player{
-    .super = base.Entity{ .id = 1 },
+    .id = 1,         // From Entity (flattened)
     .name = "Hero",
     .health = 100,
 };
 
-try player.call_save();  // Inherited from Entity
+try player.call_save();  // Inherited from Entity via @ptrCast
 ```
 
 ### Multi-Level Inheritance
@@ -404,15 +402,13 @@ const Player = zoop.class(struct {
 });
 
 var player = Player{
-    .super = Character{
-        .super = Entity{ .id = 1 },
-        .name = "Hero",
-    },
+    .id = 1,           // From Entity (flattened)
+    .name = "Hero",    // From Character (flattened)
     .username = "player1",
 };
 
-// Access fields through super chain:
-std.debug.print("ID: {}\n", .{player.super.super.id});  // 1
+// Direct field access:
+std.debug.print("ID: {}\n", .{player.id});  // 1
 ```
 
 ### Mixins
@@ -454,10 +450,9 @@ const User = zoop.class(struct {
 
 // Usage:
 var user = User{
-    .super = Entity{ .id = 1 },
-    // Mixin fields are flattened (not nested):
-    .created_at = std.time.timestamp(),
-    .updated_at = std.time.timestamp(),
+    .id = 1,               // From Entity (flattened)
+    .created_at = std.time.timestamp(),  // From Timestamped (flattened)
+    .updated_at = std.time.timestamp(),  // From Timestamped (flattened)
     .name = "Alice",
     .email = "alice@example.com",
 };
@@ -467,14 +462,15 @@ user.updateTimestamp();
 const age = user.getAge();
 const json = try user.toJson(allocator);
 
-// Parent methods still work:
+// Parent methods work via @ptrCast:
 user.call_save();
 ```
 
 **How it works:**
-- Mixin **fields** are flattened directly into the child class
+- **Parent and mixin fields** are both flattened directly into the child class
 - Mixin **methods** are copied with type names rewritten (`*Timestamped` → `*User`)
-- Child methods override mixin methods (no duplication)
+- Parent **methods** use `@ptrCast` for polymorphism
+- Child methods override mixin/parent methods (no duplication)
 - Multiple mixins can be applied: `pub const mixins = .{ A, B, C };`
 
 ---
@@ -562,19 +558,20 @@ const Child = zoop.class(struct {
     
     pub fn init(allocator: Allocator) !Child {
         return .{
-            .super = try Parent.init(allocator, 1024),
+            .allocator = allocator,   // From Parent (flattened)
+            .buffer = try allocator.alloc(u8, 1024),  // From Parent (flattened)
             .extra = try allocator.alloc(u8, 512),
         };
     }
     
     pub fn deinit(self: *Child) void {
-        self.super.allocator.free(self.extra);
-        self.super.deinit();  // Call parent cleanup
+        self.allocator.free(self.extra);
+        self.allocator.free(self.buffer);
     }
 });
 ```
 
-Zoop automatically rewrites field accesses in `init`/`deinit` to use `.super`.
+With flattened fields, you access parent fields directly (no `.super`).
 
 ### Override Detection
 

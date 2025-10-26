@@ -208,17 +208,18 @@ pub const Dog = zoop.class(struct {
     
     pub fn init(name: []const u8, age: u8, breed: []const u8) Dog {
         return .{
-            .super = Animal.init(name, age),
+            .name = name,
+            .age = age,
             .breed = breed,
         };
     }
     
     pub fn speak(self: *Dog) void {  // Override
-        std.debug.print("{s} barks!\n", .{self.super.name});
+        std.debug.print("{s} barks!\n", .{self.name});
     }
     
     pub fn fetch(self: *Dog) void {
-        std.debug.print("{s} the {s} fetches\n", .{ self.super.name, self.breed });
+        std.debug.print("{s} the {s} fetches\n", .{ self.name, self.breed });
     }
 });
 
@@ -242,9 +243,9 @@ zig build run
 
 ## Core Concepts
 
-### Inheritance via `super` Field
+### Inheritance via Flattened Fields
 
-Zoop uses **embedded parent structs** for type-safe composition:
+Zoop uses **flattened parent fields** for natural property access:
 
 ```zig
 // You write:
@@ -255,17 +256,19 @@ const Employee = zoop.class(struct {
 
 // Zoop generates:
 const Employee = struct {
-    super: Person,      // Embedded parent
-    employee_id: u32,
+    name: []const u8,   // From Person (flattened)
+    age: u32,           // From Person (flattened)
+    employee_id: u32,   // Own field
     
-    // Auto-generated method wrappers...
+    // Auto-generated method wrappers using @ptrCast...
 };
 ```
 
-**Why not flat fields?** Zig can reorder struct fields for alignment. Using `@ptrCast` to treat `Employee` as `Person` would be undefined behavior. Embedded structs are:
-- ✅ Type-safe (compiler validates everything)
-- ✅ Explicit (clear parent relationship)
-- ✅ Optimized away (zero overhead at runtime)
+**Benefits:**
+- ✅ Direct field access: `employee.name` instead of `employee.super.name`
+- ✅ Natural initialization: `.{ .name = "Alice", .age = 30, .employee_id = 123 }`
+- ✅ Polymorphism via `@ptrCast(@alignCast(self))` - accepts the casting overhead for cleaner API
+- ✅ Works like traditional OOP languages
 
 ### Properties
 
@@ -341,15 +344,13 @@ const Player = zoop.class(struct {
 });
 
 var player = Player{
-    .super = Character{
-        .super = Entity{ .id = 1 },
-        .name = "Hero",
-    },
+    .id = 1,           // From Entity (flattened)
+    .name = "Hero",    // From Character (flattened)
     .username = "player1",
 };
 
-player.call_save();  // Entity.save() via super.super
-player.call_move();  // Character.move() via super
+player.call_save();  // Entity.save() via @ptrCast
+player.call_move();  // Character.move() via @ptrCast
 ```
 
 ### Cross-File Inheritance
@@ -412,19 +413,19 @@ const User = zoop.class(struct {
 
 // Generated:
 const User = struct {
-    super: Entity,         // Parent (embedded)
+    id: u64,               // From Entity (flattened!)
     created_at: i64,       // From Timestamped (flattened!)
     updated_at: i64,       // From Timestamped (flattened!)
     name: []const u8,
     email: []const u8,
     
-    pub inline fn call_save(self: *User) void { ... }  // From Entity
+    pub inline fn call_save(self: *User) void { ... }  // From Entity via @ptrCast
     pub fn updateTimestamp(self: *User) void { ... }    // From Timestamped (type rewritten!)
     pub fn toJson(self: *const User, ...) ![]const u8 { ... }  // From Serializable
 };
 
 var user = User{
-    .super = Entity{ .id = 1 },
+    .id = 1,
     .created_at = std.time.timestamp(),
     .updated_at = std.time.timestamp(),
     .name = "Alice",

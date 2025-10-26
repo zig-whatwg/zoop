@@ -1149,7 +1149,6 @@ fn adaptInitDeinit(
     allocator: std.mem.Allocator,
     source: []const u8,
     child_type: []const u8,
-    parent_field_names: std.StringHashMap(void),
 ) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -1205,28 +1204,9 @@ fn adaptInitDeinit(
                 pos += 1;
             }
         } else {
-            if (std.mem.indexOfPos(u8, source, pos, "self.")) |self_dot_pos| {
-                try writer.writeAll(source[pos..self_dot_pos]);
-
-                const field_start = self_dot_pos + 5;
-                var field_end = field_start;
-                while (field_end < source.len) : (field_end += 1) {
-                    const c = source[field_end];
-                    if (!std.ascii.isAlphanumeric(c) and c != '_') break;
-                }
-
-                const field_name = source[field_start..field_end];
-
-                if (parent_field_names.contains(field_name)) {
-                    try writer.writeAll("self.super.");
-                    try writer.writeAll(field_name);
-                } else {
-                    try writer.writeAll("self.");
-                    try writer.writeAll(field_name);
-                }
-
-                pos = field_end;
-            } else if (found_parent_type) |parent_type| {
+            // With flattened fields, we no longer need to rewrite self.field to self.super.field
+            // Just handle type name replacement
+            if (found_parent_type) |parent_type| {
                 if (std.mem.indexOfPos(u8, source, pos, parent_type)) |match_pos| {
                     try writer.writeAll(source[pos..match_pos]);
                     try writer.writeAll(child_type);
@@ -1259,10 +1239,48 @@ fn generateEnhancedClassWithRegistry(
 
     try writer.print("pub const {s} = struct {{\n", .{parsed.name});
 
-    if (parsed.parent_name) |parent_name| {
-        try writer.print("    super: {s},\n", .{parent_name});
-        if (parsed.properties.len > 0 or parsed.fields.len > 0 or parsed.mixin_names.len > 0) {
-            try writer.writeAll("\n");
+    // Generate parent fields (flattened - copy fields directly from parent classes)
+    if (parsed.parent_name) |parent_ref| {
+        var current_parent: ?[]const u8 = parent_ref;
+        var current_file_path = current_file;
+
+        // Collect all parent fields by walking up the hierarchy
+        var all_parent_fields: std.ArrayList(FieldDef) = .empty;
+        defer all_parent_fields.deinit(allocator);
+        var all_parent_properties: std.ArrayList(PropertyDef) = .empty;
+        defer all_parent_properties.deinit(allocator);
+
+        while (current_parent) |parent| {
+            const parent_info = (try registry.resolveParentReference(parent, current_file_path)) orelse break;
+
+            // Add parent fields (in reverse order, will reverse later)
+            for (parent_info.fields) |field| {
+                try all_parent_fields.append(allocator, field);
+            }
+            for (parent_info.properties) |prop| {
+                try all_parent_properties.append(allocator, prop);
+            }
+
+            current_parent = parent_info.parent_name;
+            current_file_path = parent_info.file_path;
+        }
+
+        // Reverse to get correct inheritance order (grandparent first)
+        std.mem.reverse(FieldDef, all_parent_fields.items);
+        std.mem.reverse(PropertyDef, all_parent_properties.items);
+
+        // Write parent fields
+        for (all_parent_fields.items) |field| {
+            try writer.print("    {s}: {s},\n", .{ field.name, field.type_name });
+        }
+        for (all_parent_properties.items) |prop| {
+            try writer.print("    {s}: {s},\n", .{ prop.name, prop.type_name });
+        }
+
+        if (all_parent_fields.items.len > 0 or all_parent_properties.items.len > 0) {
+            if (parsed.mixin_names.len > 0 or parsed.properties.len > 0 or parsed.fields.len > 0) {
+                try writer.writeAll("\n");
+            }
         }
     }
 
@@ -1313,9 +1331,14 @@ fn generateEnhancedClassWithRegistry(
         var parent_field_names = std.StringHashMap(void).init(allocator);
         defer parent_field_names.deinit();
 
+        const ParentMethod = struct {
+            method: MethodDef,
+            parent_type: []const u8,
+        };
+
         var init_method: ?MethodDef = null;
         var deinit_method: ?MethodDef = null;
-        var parent_methods: std.ArrayList(MethodDef) = .empty;
+        var parent_methods: std.ArrayList(ParentMethod) = .empty;
         defer parent_methods.deinit(allocator);
 
         var current_parent: ?[]const u8 = parent_ref;
@@ -1341,7 +1364,10 @@ fn generateEnhancedClassWithRegistry(
                 } else if (is_deinit and !child_method_names.contains("deinit") and deinit_method == null) {
                     deinit_method = method;
                 } else if (!child_method_names.contains(method.name) and !method.is_static and !is_init and !is_deinit) {
-                    try parent_methods.append(allocator, method);
+                    try parent_methods.append(allocator, .{
+                        .method = method,
+                        .parent_type = parent_info.name,
+                    });
                 }
             }
 
@@ -1350,18 +1376,21 @@ fn generateEnhancedClassWithRegistry(
         }
 
         if (init_method) |init| {
-            const adapted = try adaptInitDeinit(allocator, init.source, parsed.name, parent_field_names);
+            const adapted = try adaptInitDeinit(allocator, init.source, parsed.name);
             defer allocator.free(adapted);
             try writer.print("    {s}\n", .{adapted});
         }
 
         if (deinit_method) |deinit| {
-            const adapted = try adaptInitDeinit(allocator, deinit.source, parsed.name, parent_field_names);
+            const adapted = try adaptInitDeinit(allocator, deinit.source, parsed.name);
             defer allocator.free(adapted);
             try writer.print("    {s}\n", .{adapted});
         }
 
-        for (parent_methods.items) |method| {
+        for (parent_methods.items) |parent_method| {
+            const method = parent_method.method;
+            const parent_type = parent_method.parent_type;
+
             const child_signature = blk: {
                 const sig_inner = std.mem.trim(u8, method.signature[1 .. method.signature.len - 1], " \t");
                 if (sig_inner.len == 0) break :blk method.signature;
@@ -1391,10 +1420,13 @@ fn generateEnhancedClassWithRegistry(
                 return_type_str,
             });
 
+            // Cast self to parent type using @ptrCast and *anyopaque
+            try writer.print("        const parent_ptr: *{s} = @ptrCast(@alignCast(self));\n", .{parent_type});
+
             if (method.return_type.len > 0 and !std.mem.eql(u8, method.return_type, "void")) {
-                try writer.print("        return self.super.{s}(", .{method.name});
+                try writer.print("        return parent_ptr.{s}(", .{method.name});
             } else {
-                try writer.print("        self.super.{s}(", .{method.name});
+                try writer.print("        parent_ptr.{s}(", .{method.name});
             }
 
             const sig_inner = std.mem.trim(u8, method.signature[1 .. method.signature.len - 1], " \t");

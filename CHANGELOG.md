@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`zoop.mixin()` function**: New API for defining mixins
+  - Semantic marker that clearly identifies a struct as a mixin
+  - Codegen now recognizes both `zoop.class()` and `zoop.mixin()` syntax
+  - Mixins work identically to before, but with clearer intent
+  - Documentation: MIXIN_USAGE.md, examples_in/mixin_example.zig, tests/fixtures/mixin_source.txt
+  - All documentation updated to use `zoop.mixin()` for mixin definitions
+
 ### Changed
 - **BREAKING**: Removed `method_prefix` configuration option
   - Inherited methods are now always copied directly without prefixes

@@ -417,8 +417,8 @@ Compose multiple behaviors without creating deep inheritance hierarchies:
 ```zig
 const zoop = @import("zoop");
 
-// Define reusable mixins
-const Timestamped = zoop.class(struct {
+// Define reusable mixins using zoop.mixin()
+const Timestamped = zoop.mixin(struct {
     created_at: i64,
     updated_at: i64,
     
@@ -431,7 +431,7 @@ const Timestamped = zoop.class(struct {
     }
 });
 
-const Serializable = zoop.class(struct {
+const Serializable = zoop.mixin(struct {
     pub fn toJson(self: *const Serializable, allocator: std.mem.Allocator) ![]const u8 {
         // Your serialization implementation
         return try allocator.dupe(u8, "{}");

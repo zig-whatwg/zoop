@@ -72,6 +72,81 @@ pub const ClassConfig = struct {
     setter_prefix: []const u8 = "set_",
 };
 
+/// Mark a mixin struct for code generation.
+///
+/// Mixins are reusable bundles of fields and methods that can be composed
+/// into classes without traditional inheritance. Use this function to define
+/// a mixin that can be included in classes via `pub const mixins = .{ ... }`.
+///
+/// ## Usage
+///
+/// ### Basic Mixin
+///
+/// ```zig
+/// const Timestamped = zoop.mixin(struct {
+///     created_at: i64,
+///     updated_at: i64,
+///
+///     pub fn updateTimestamp(self: *Timestamped) void {
+///         self.updated_at = std.time.timestamp();
+///     }
+/// });
+/// ```
+///
+/// ### Using Mixins in Classes
+///
+/// ```zig
+/// const User = zoop.class(struct {
+///     pub const mixins = .{ Timestamped };
+///
+///     name: []const u8,
+///     email: []const u8,
+/// });
+/// ```
+///
+/// ## What Gets Generated
+///
+/// When a class includes mixins, `zoop-codegen`:
+///
+/// 1. **Flattens mixin fields** directly into the class:
+///    ```zig
+///    struct {
+///        created_at: i64,      // From Timestamped mixin
+///        updated_at: i64,      // From Timestamped mixin
+///        name: []const u8,     // From User class
+///        email: []const u8,    // From User class
+///    }
+///    ```
+///
+/// 2. **Copies mixin methods** with proper type rewriting:
+///    ```zig
+///    pub fn updateTimestamp(self: *User) void {
+///        self.updated_at = std.time.timestamp();
+///    }
+///    ```
+///
+/// ## Important Notes
+///
+/// - Mixin fields are **flattened** into classes (no nested struct)
+/// - Mixin methods are **copied** with self-type rewritten to the class type
+/// - Multiple mixins can be combined in one class
+/// - Child classes can override mixin methods
+/// - This function returns the definition as-is for parsing
+///
+/// ## Return Value
+///
+/// Returns the mixin definition unchanged. The actual enhancement happens
+/// during code generation when the mixin is included in a class.
+///
+/// ## Examples
+///
+/// See:
+/// - tests/test_mixins.zig for comprehensive examples
+/// - CONSUMER_USAGE.md for integration patterns
+pub fn mixin(comptime definition: type) type {
+    return definition;
+}
+
 /// Mark a struct for code generation with OOP features.
 ///
 /// This is the primary API for Zoop. It serves two purposes:
@@ -111,6 +186,19 @@ pub const ClassConfig = struct {
 ///         // Access parent fields via super
 ///         std.debug.print("{s} is working\n", .{self.super.name});
 ///     }
+/// });
+/// ```
+///
+/// ### With Mixins
+///
+/// Use `pub const mixins = .{ ... }` to include mixin fields and methods:
+///
+/// ```zig
+/// const User = zoop.class(struct {
+///     pub const mixins = .{ Timestamped, Serializable };
+///
+///     name: []const u8,
+///     email: []const u8,
 /// });
 /// ```
 ///

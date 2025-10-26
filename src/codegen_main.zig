@@ -1,8 +1,8 @@
 //! # zoop-codegen - Command-line code generator for Zoop
 //!
 //! This is the main entry point for the `zoop-codegen` executable, which scans
-//! Zig source files for `zoop.class()` declarations and generates enhanced code
-//! with inheritance, properties, and method wrappers.
+//! Zig source files for `zoop.class()` and `zoop.mixin()` declarations and
+//! generates enhanced code with inheritance, properties, and method wrappers.
 //!
 //! ## Usage
 //!
@@ -14,7 +14,7 @@
 //!
 //! ### Required Arguments
 //!
-//! - `--source-dir <dir>` - Directory to scan for `.zig` files containing `zoop.class()`
+//! - `--source-dir <dir>` - Directory to scan for `.zig` files containing `zoop.class()` and `zoop.mixin()`
 //! - `--output-dir <dir>` - Directory where generated code will be written
 //!
 //! ### Optional Arguments
@@ -198,15 +198,15 @@ fn printHelp() void {
     std.debug.print(
         \\zoop-codegen - Automatic OOP code generator for Zig
         \\
-        \\Scans Zig source files for zoop.class() declarations and generates enhanced
-        \\code with inheritance, properties, and zero-cost method wrappers.
+        \\Scans Zig source files for zoop.class() and zoop.mixin() declarations and 
+        \\generates enhanced code with inheritance, properties, and zero-cost method wrappers.
         \\
         \\USAGE:
         \\    zoop-codegen --source-dir <dir> --output-dir <dir> [OPTIONS]
         \\
         \\REQUIRED ARGUMENTS:
-        \\    --source-dir <dir>      Directory to scan for class definitions
-        \\                            Must contain .zig files with zoop.class() calls
+        \\    --source-dir <dir>      Directory to scan for class and mixin definitions
+        \\                            Must contain .zig files with zoop.class() or zoop.mixin() calls
         \\
         \\    --output-dir <dir>      Directory to write generated code
         \\                            Creates same directory structure as source

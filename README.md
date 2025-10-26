@@ -385,8 +385,8 @@ pub const Player = zoop.class(struct {
 Use mixins for code reuse without creating deep hierarchies:
 
 ```zig
-// Define reusable behaviors
-const Timestamped = zoop.class(struct {
+// Define reusable behaviors using zoop.mixin()
+const Timestamped = zoop.mixin(struct {
     created_at: i64,
     updated_at: i64,
     
@@ -395,7 +395,7 @@ const Timestamped = zoop.class(struct {
     }
 });
 
-const Serializable = zoop.class(struct {
+const Serializable = zoop.mixin(struct {
     pub fn toJson(self: *const Serializable, allocator: std.mem.Allocator) ![]const u8 {
         // Implementation...
     }

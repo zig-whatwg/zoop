@@ -237,6 +237,7 @@ pub fn generateAllClasses(
         errdefer allocator.free(source_content);
 
         if (std.mem.indexOf(u8, source_content, "zoop.class(") != null or
+            std.mem.indexOf(u8, source_content, "zoop.mixin(") != null or
             std.mem.indexOf(u8, source_content, "@import(\"zoop\")") != null)
         {
             const file_path_owned = try allocator.dupe(u8, entry.path);
@@ -585,9 +586,24 @@ fn scanFileForClasses(
     var pos: usize = 0;
 
     while (pos < source.len) {
-        const class_start = std.mem.indexOfPos(u8, source, pos, "zoop.class(") orelse break;
+        // Find next zoop.class( or zoop.mixin(
+        const class_start = std.mem.indexOfPos(u8, source, pos, "zoop.class(");
+        const mixin_start = std.mem.indexOfPos(u8, source, pos, "zoop.mixin(");
 
-        if (try parseClassDefinition(allocator, source, class_start)) |parsed| {
+        const next_start = blk: {
+            if (class_start) |c| {
+                if (mixin_start) |m| {
+                    break :blk @min(c, m);
+                }
+                break :blk c;
+            } else if (mixin_start) |m| {
+                break :blk m;
+            } else {
+                break;
+            }
+        };
+
+        if (try parseClassDefinition(allocator, source, next_start)) |parsed| {
             defer {
                 var mutable = parsed;
                 mutable.deinit();
@@ -626,7 +642,7 @@ fn scanFileForClasses(
             try classes.append(allocator, class_info);
             pos = parsed.source_end;
         } else {
-            pos = class_start + 1;
+            pos = next_start + 1;
         }
     }
 }
@@ -715,27 +731,42 @@ fn processSourceFileWithRegistry(
     var last_class_end: usize = 0;
 
     while (pos < source.len) {
-        const class_start = std.mem.indexOfPos(u8, source, pos, "zoop.class(") orelse break;
+        // Find next zoop.class( or zoop.mixin(
+        const class_start = std.mem.indexOfPos(u8, source, pos, "zoop.class(");
+        const mixin_start = std.mem.indexOfPos(u8, source, pos, "zoop.mixin(");
+
+        const next_start = blk: {
+            if (class_start) |c| {
+                if (mixin_start) |m| {
+                    break :blk @min(c, m);
+                }
+                break :blk c;
+            } else if (mixin_start) |m| {
+                break :blk m;
+            } else {
+                break;
+            }
+        };
 
         const class_keyword_start = blk: {
-            var i = class_start;
+            var i = next_start;
             while (i > 0) : (i -= 1) {
                 if (source[i] == '\n' or i == 0) {
                     const line_start = if (source[i] == '\n') i + 1 else i;
-                    const line = std.mem.trim(u8, source[line_start..class_start], " \t");
+                    const line = std.mem.trim(u8, source[line_start..next_start], " \t");
                     if (std.mem.startsWith(u8, line, "pub const") or std.mem.startsWith(u8, line, "const")) {
                         break :blk line_start;
                     }
                 }
             }
-            break :blk class_start;
+            break :blk next_start;
         };
 
         const segment = try filterZoopImport(allocator, source[last_class_end..class_keyword_start]);
         defer allocator.free(segment);
         try output.appendSlice(allocator, segment);
 
-        if (try parseClassDefinition(allocator, source, class_start)) |parsed| {
+        if (try parseClassDefinition(allocator, source, next_start)) |parsed| {
             defer {
                 var mutable = parsed;
                 mutable.deinit();
@@ -749,7 +780,7 @@ fn processSourceFileWithRegistry(
             last_class_end = parsed.source_end;
             pos = parsed.source_end;
         } else {
-            pos = class_start + 1;
+            pos = next_start + 1;
         }
     }
 

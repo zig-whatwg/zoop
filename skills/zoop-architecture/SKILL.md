@@ -62,7 +62,18 @@ Mixins use the exact same mechanism as parent inheritance:
 - Fields: Flattened
 - Methods: Copied with type rewriting
 
+**Define mixins with `zoop.mixin()`:**
+
 ```zig
+const Timestamped = zoop.mixin(struct {
+    created_at: i64,
+    updated_at: i64,
+    
+    pub fn updateTimestamp(self: *Timestamped) void {
+        self.updated_at = std.time.timestamp();
+    }
+});
+
 const User = zoop.class(struct {
     pub const extends = Entity;
     pub const mixins = .{ Timestamped, Serializable };

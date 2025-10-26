@@ -120,12 +120,19 @@ dog.call_speak();         // Only if not overridden
 
 ### Code Blocks
 
-Use proper syntax highlighting:
+Use proper syntax highlighting and correct API usage:
 
 ```zig
+// Classes use zoop.class()
 const Dog = zoop.class(struct {
     pub const extends = Animal;
     breed: []const u8,
+});
+
+// Mixins use zoop.mixin()
+const Timestamped = zoop.mixin(struct {
+    created_at: i64,
+    updated_at: i64,
 });
 ```
 
@@ -138,6 +145,7 @@ const Dog = zoop.class(struct {
 | "type rewriting" | "casting" |
 | "zero overhead" | "minimal overhead" |
 | "direct access" | "access via super" |
+| "`zoop.mixin()`" | "`zoop.class()`" (for mixins) |
 
 ### Example Structure
 

@@ -9,6 +9,7 @@ Load this skill automatically when:
 - Debugging generated code issues
 - Understanding the build pipeline
 - Working with `src/codegen.zig` or `src/codegen_main.zig`
+- Implementing support for `zoop.class()` or `zoop.mixin()` syntax
 
 ## What this skill provides
 
@@ -24,10 +25,13 @@ This skill ensures Claude can effectively work with Zoop's code generator by:
 ### Generation Pipeline
 
 ```
+User source (with zoop.class() and zoop.mixin())
+    ↓
 src/codegen_main.zig       CLI entry point
     ↓
-src/codegen.zig           Main generation logic
-    ↓
+src/codegen.zig           Scan for zoop.class() and zoop.mixin()
+    ↓                      Parse class/mixin definitions
+    ↓                      Generate enhanced code
 .zig-cache/zoop-generated/ Generated output
     ↓
 User's build.zig          Compilation

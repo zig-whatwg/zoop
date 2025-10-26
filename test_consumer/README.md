@@ -33,11 +33,13 @@ pub const Dog = zoop.class(struct {
 **Generated code** (`src_generated/main.zig` - auto-created):
 ```zig
 pub const Dog = struct {
-    super: Animal,
+    name: []const u8,  // From Animal (flattened)
+    age: u8,           // From Animal (flattened)
     breed: []const u8,
     
-    pub inline fn call_makeSound(self: *Dog) void {
-        self.super.makeSound();
+    // Inherited methods copied directly (zero overhead)
+    pub fn makeSound(self: *Dog) void {
+        std.debug.print("{s} makes a sound\n", .{self.name});
     }
 };
 ```

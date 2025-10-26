@@ -187,6 +187,44 @@ emp.work();        // No prefix (own method)
 
 ---
 
+### `zoop.mixin()`
+
+Define reusable mixins that can be composed into classes.
+
+**Signature:**
+```zig
+pub fn mixin(comptime definition: type) type
+```
+
+**Usage:**
+```zig
+const zoop = @import("zoop");
+
+const Timestamped = zoop.mixin(struct {
+    created_at: i64,
+    updated_at: i64,
+    
+    pub fn updateTimestamp(self: *Timestamped) void {
+        self.updated_at = std.time.timestamp();
+    }
+});
+```
+
+**Parameters:**
+- `definition: type` - A struct type containing:
+  - Fields - Struct fields that will be flattened into classes
+  - Methods - Public functions that will be copied into classes
+
+**Returns:**
+- The mixin definition unchanged (used as-is during parsing)
+
+**What it does:**
+- Marks a struct as a mixin for documentation and clarity
+- At runtime during parsing, returns the definition unchanged
+- During code generation, mixin fields/methods are flattened into classes that include them
+
+---
+
 ### Method Override
 
 Child classes can override parent methods:
@@ -222,13 +260,13 @@ mgr.work();   // Inherited from Employee
 
 ---
 
-### Mixins
+### Using Mixins
 
 Compose multiple behaviors without deep inheritance hierarchies:
 
 ```zig
-// Define reusable mixins
-const Timestamped = zoop.class(struct {
+// Define reusable mixins using zoop.mixin()
+const Timestamped = zoop.mixin(struct {
     created_at: i64,
     updated_at: i64,
     
@@ -237,7 +275,7 @@ const Timestamped = zoop.class(struct {
     }
 });
 
-const Serializable = zoop.class(struct {
+const Serializable = zoop.mixin(struct {
     pub fn toJson(self: *const Serializable, allocator: std.mem.Allocator) ![]const u8 {
         // Implementation...
         return try allocator.dupe(u8, "{}");

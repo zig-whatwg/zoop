@@ -89,6 +89,7 @@
 //!
 //! This module exports:
 //! - `class()` - Mark a struct for code generation
+//! - `mixin()` - Mark a mixin struct for code generation
 //! - `ClassConfig` - Configuration for method prefixes
 //! - `createCodegenStep()` - Helper for build.zig integration
 
@@ -163,6 +164,56 @@ const std = @import("std");
 ///
 /// See CONSUMER_USAGE.md for complete integration examples.
 pub const class = @import("class.zig").class;
+
+/// Mark a mixin struct for code generation.
+///
+/// Mixins are reusable bundles of fields and methods that can be composed
+/// into classes. Use this to define mixins that will be included in classes
+/// via `pub const mixins = .{ MixinName }`.
+///
+/// ## Basic Usage
+///
+/// ```zig
+/// const Timestamped = zoop.mixin(struct {
+///     created_at: i64,
+///     updated_at: i64,
+///
+///     pub fn updateTimestamp(self: *Timestamped) void {
+///         self.updated_at = std.time.timestamp();
+///     }
+/// });
+/// ```
+///
+/// ## Using in Classes
+///
+/// ```zig
+/// const User = zoop.class(struct {
+///     pub const mixins = .{ Timestamped };
+///
+///     name: []const u8,
+///     email: []const u8,
+/// });
+/// ```
+///
+/// ## What Gets Generated
+///
+/// Mixin fields and methods are flattened directly into classes:
+///
+/// ```zig
+/// pub const User = struct {
+///     created_at: i64,      // From mixin
+///     updated_at: i64,      // From mixin
+///     name: []const u8,     // From class
+///     email: []const u8,    // From class
+///
+///     pub fn updateTimestamp(self: *User) void {
+///         self.updated_at = std.time.timestamp();
+///     }
+/// };
+/// ```
+///
+/// See tests/test_mixins.zig for comprehensive examples.
+pub const mixin = @import("class.zig").mixin;
 
 /// Configuration for generated method naming.
 ///

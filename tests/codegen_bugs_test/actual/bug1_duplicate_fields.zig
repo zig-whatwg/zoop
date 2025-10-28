@@ -20,4 +20,3 @@ pub const SimpleClass = struct {
         _ = self;
     }
 };
-

@@ -21,4 +21,3 @@ pub const InlineFnClass = struct {
         return "utf-8";
     }
 };
-

@@ -26,6 +26,4 @@ pub const TextEncoder = struct {
             .encoding = "utf-8",
         };
     }
-
 };
-

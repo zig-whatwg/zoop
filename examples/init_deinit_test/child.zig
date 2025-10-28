@@ -4,13 +4,10 @@ const parent = @import("parent.zig");
 
 pub const Child = zoop.class(struct {
     pub const extends = parent.Parent;
-    
+
     value: i32,
 
-    pub fn init(allocator: std.mem.Allocator, name_val: []const u8, val: i32) !Child {
-        return Child{
-            .super = try parent.Parent.init(allocator, name_val),
-            .value = val,
-        };
-    }
+    // Child inherits init from Parent and adds value parameter
+    // Generated init will be: init(allocator, name_val, value) !Child
+    // No need to manually define init - codegen creates it automatically
 });

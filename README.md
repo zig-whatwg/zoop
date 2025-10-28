@@ -2,7 +2,7 @@
 
 **Zero-cost object-oriented programming for Zig through compile-time code generation.**
 
-[![Zig](https://img.shields.io/badge/zig-0.15+-orange.svg)](https://ziglang.org)
+[![Zig](https://img.shields.io/badge/zig-0.14+-orange.svg)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Zoop brings familiar OOP patterns to Zig while maintaining zero runtime overhead and compile-time type safety. Write classes with inheritance and properties using natural syntax, then let Zoop generate optimized code that compiles away to nothing.
@@ -20,7 +20,7 @@ const Employee = zoop.class(struct {
 employee.greet();  // Inherited from Person - zero overhead
 ```
 
-> **Status:** Beta - Core features complete and tested. Production-ready for real projects.
+> **Status:** v0.1.0 - Core features complete and tested. Production-ready for real projects.
 
 ---
 
@@ -94,7 +94,7 @@ Add to your `build.zig.zon`:
     .version = "0.1.0",
     .dependencies = .{
         .zoop = .{
-            .url = "https://github.com/yourname/zoop/archive/v0.2.0-beta.tar.gz",
+            .url = "https://github.com/zig-whatwg/zoop/archive/v0.1.0.tar.gz",
             .hash = "1220...",  // zig build will calculate this
         },
     },
@@ -577,28 +577,29 @@ Run: `zig build benchmark -Doptimize=ReleaseFast`
 
 ## Project Status
 
-### ✅ Complete & Tested (v0.2.0-beta)
+### ✅ Complete & Tested (v0.1.0)
 
+- Flattened field inheritance (parent fields embedded directly)
 - Cross-file inheritance with import resolution
+- Mixins for multiple inheritance via composition
 - Properties (read_only / read_write)
-- Init/deinit inheritance with field rewriting
+- Init/deinit method copying from parent to child
 - Multi-level inheritance (unlimited depth)
-- Method forwarding with configurable prefixes
+- Method copying with type rewriting
 - Override detection
 - Circular dependency detection
 - Path traversal protection
 - Memory safety (zero leaks verified)
-- **36 tests passing**, extensively validated
+- Smart caching with descendant tracking
+- **39+ tests passing**, extensively validated
 
 ### ⚠️ Known Limitations
 
-- **Mixins not implemented** - Only single parent inheritance
 - **No field alignment optimization** - Fields not sorted by size
 - **Static methods get wrappers** - Harmless but unnecessary
 
 ### 🔮 Future Considerations
 
-- Mixin support for multiple inheritance patterns
 - Field reordering for optimal memory layout
 - Static method detection to skip wrapper generation
 - LSP/editor integration for better jump-to-definition
@@ -630,13 +631,13 @@ zoop-codegen --source-dir src --output-dir generated
 ## Building From Source
 
 ```bash
-git clone https://github.com/yourname/zoop
+git clone https://github.com/zig-whatwg/zoop
 cd zoop
 
 # Build code generator
 zig build codegen
 
-# Run tests (all 36 should pass)
+# Run tests (all 39+ should pass)
 zig build test
 
 # Run benchmarks
@@ -646,7 +647,7 @@ zig build benchmark -Doptimize=ReleaseFast
 zig build run
 ```
 
-**Requirements:** Zig 0.15 or later
+**Requirements:** Zig 0.14 or later
 
 ---
 
@@ -654,13 +655,12 @@ zig build run
 
 Contributions welcome! Areas where help is needed:
 
-1. **Mixin system** - Design and implement multiple inheritance
-2. **Field optimization** - Sort fields by alignment for better packing
-3. **Static method detection** - Skip wrapper generation for static methods
-4. **Documentation** - More examples, tutorials, use case guides
-5. **Testing** - Additional edge cases, real-world usage validation
+1. **Field optimization** - Sort fields by alignment for better packing
+2. **Static method detection** - Skip wrapper generation for static methods
+3. **Documentation** - More examples, tutorials, use case guides
+4. **Testing** - Additional edge cases, real-world usage validation
 
-See [GitHub Issues](https://github.com/yourname/zoop/issues) for specific tasks.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [GitHub Issues](https://github.com/zig-whatwg/zoop/issues) for specific tasks.
 
 **Before submitting PRs:**
 - Run `zig build test` - all tests must pass

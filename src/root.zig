@@ -265,10 +265,34 @@ pub const mixin = @import("class.zig").mixin;
 /// ```
 pub const ClassConfig = @import("class.zig").ClassConfig;
 
-// Note: The `createCodegenStep()` helper function is available in build.zig
-// but cannot be re-exported from this module due to Zig's module system.
-// See build.zig in the Zoop repository for the implementation, or use the
-// manual `gen_cmd.addArgs()` approach shown in CONSUMER_USAGE.md
+/// Build system integration helpers.
+///
+/// These functions help integrate zoop-codegen into your build.zig file.
+/// They handle running zoop-codegen with proper caching and dependency tracking.
+///
+/// ## Usage
+///
+/// Import in build.zig:
+/// ```zig
+/// const zoop = @import("zoop");
+///
+/// pub fn build(b: *std.Build) void {
+///     // Add zoop codegen step
+///     const zoop_step = zoop.addZoopCodegen(b, .{
+///         .source_dir = "zoop_src",
+///         .output_dir = "src",
+///     });
+///
+///     // Your executable depends on codegen running first
+///     exe.step.dependOn(zoop_step);
+/// }
+/// ```
+///
+/// See build_helper.zig for detailed documentation and examples.
+pub const addZoopCodegen = @import("build_helper.zig").addZoopCodegen;
+pub const addZoopCodegenFromBinary = @import("build_helper.zig").addZoopCodegenFromBinary;
+pub const addCleanCacheStep = @import("build_helper.zig").addCleanCacheStep;
+pub const ZoopOptions = @import("build_helper.zig").ZoopOptions;
 
 test {
     // Run all sub-module tests

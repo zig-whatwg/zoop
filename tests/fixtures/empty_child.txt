@@ -1,0 +1,7 @@
+pub const Node = zoop.class(struct {
+    pub const __parent__ = EventTarget;
+
+    pub fn removeChild(self: *Node) void {
+        _ = self;
+    }
+});

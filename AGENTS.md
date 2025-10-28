@@ -25,6 +25,7 @@ All skills are located in the `skills/` directory:
 zoop/
 ├── skills/
 │   ├── zig/                   # General Zig programming
+│   ├── zoop-workflow/         # Developing with Zoop (NEW!)
 │   ├── zoop-architecture/     # Understanding Zoop's design
 │   ├── zoop-codegen/          # Working with code generation
 │   ├── zoop-testing/          # Running and writing tests
@@ -63,7 +64,34 @@ zoop/
 
 ### Zoop-Specific Skills
 
-#### 1. **zoop-architecture** (`skills/zoop-architecture/`)
+#### 1. **zoop-workflow** (`skills/zoop-workflow/`) ⭐ NEW
+
+**Purpose**: Learn how to develop Zig libraries using Zoop's OOP code generation
+
+**When to use:**
+- Working on a project that uses Zoop
+- Creating a new Zoop-based library
+- Setting up zoop build integration
+- Understanding the source vs generated file workflow
+
+**Key concepts:**
+- **NEVER edit generated files** (strict rule)
+- Two-directory system (zoop_src/ for source, src/ for generated)
+- Edit → Build → Test → Commit cycle
+- Smart caching with descendant tracking
+- Build system integration helpers
+- Committing both source and generated files
+
+**Resources:**
+- `SKILL.md` - Complete workflow guide
+- `examples/user-admin/` - Working User/Admin example
+- `examples/build.zig` - Build configuration template
+
+**Target audience**: Library authors using Zoop, AI assistants helping with Zoop projects
+
+---
+
+#### 2. **zoop-architecture** (`skills/zoop-architecture/`)
 
 **Purpose**: Understand Zoop's flattened field inheritance architecture
 

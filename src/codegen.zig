@@ -205,6 +205,21 @@ pub fn generateAllClasses(
     var registry = GlobalRegistry.init(allocator);
     defer registry.deinit();
 
+    // Load cache manifest
+    const cache_path = ".zig-cache/zoop-manifest.json";
+    var cache_manifest = try CacheManifest.load(allocator, cache_path);
+    defer cache_manifest.deinit(allocator);
+
+    // Track which files need regeneration
+    var files_to_regenerate = std.StringHashMap(void).init(allocator);
+    defer {
+        var it = files_to_regenerate.keyIterator();
+        while (it.next()) |key| {
+            allocator.free(key.*);
+        }
+        files_to_regenerate.deinit();
+    }
+
     // PASS 1: Scan all files and build global registry
     var source_dir_handle = try std.fs.cwd().openDir(source_dir, .{ .iterate = true });
     defer source_dir_handle.close();
@@ -255,6 +270,12 @@ pub fn generateAllClasses(
             try scanFileForClasses(allocator, source_content, file_path_owned, &file_info.classes, &registry);
 
             try registry.files.put(file_path_owned, file_info);
+
+            // Check if this file needs regeneration
+            const cache_entry = cache_manifest.entries.get(entry.path);
+            if (try needsRegeneration(allocator, source_path, source_content, cache_entry)) {
+                try files_to_regenerate.put(try allocator.dupe(u8, entry.path), {});
+            }
         } else {
             allocator.free(source_content);
         }
@@ -280,9 +301,53 @@ pub fn generateAllClasses(
         }
     }
 
+    // Build descendant map to track dependencies
+    var descendant_map = try registry.buildDescendantMap();
+    defer {
+        var desc_it = descendant_map.iterator();
+        while (desc_it.next()) |desc_entry| {
+            desc_entry.value_ptr.deinit(allocator);
+        }
+        descendant_map.deinit();
+    }
+
+    // Add descendants of changed files to regeneration list
+    var files_to_check = std.ArrayList([]const u8){};
+    defer files_to_check.deinit(allocator);
+
+    var regen_it = files_to_regenerate.keyIterator();
+    while (regen_it.next()) |file_path| {
+        try files_to_check.append(allocator, file_path.*);
+    }
+
+    for (files_to_check.items) |file_path| {
+        // Get classes in this file
+        const file_info = registry.files.get(file_path) orelse continue;
+        for (file_info.classes.items) |class_info| {
+            // Find descendants of each class
+            const descendants = descendant_map.get(class_info.name) orelse continue;
+            for (descendants.items) |descendant_name| {
+                // Find which file contains this descendant
+                var find_it = registry.files.iterator();
+                while (find_it.next()) |find_entry| {
+                    for (find_entry.value_ptr.classes.items) |find_class| {
+                        if (std.mem.eql(u8, find_class.name, descendant_name)) {
+                            try files_to_regenerate.put(try allocator.dupe(u8, find_entry.key_ptr.*), {});
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // PASS 2: Generate code for each file
     var classes_generated: usize = 0;
     var file_it = registry.files.iterator();
+
+    // New cache manifest to save
+    var new_cache_manifest = CacheManifest.init(allocator);
+    defer new_cache_manifest.deinit(allocator);
 
     while (file_it.next()) |entry| {
         const file_path = entry.key_ptr.*;
@@ -294,33 +359,72 @@ pub fn generateAllClasses(
             return error.UnsafePath;
         }
 
-        const generated = try processSourceFileWithRegistry(
-            allocator,
-            file_info.source_content,
-            file_path,
-            &registry,
-            config,
-        );
-        defer allocator.free(generated);
+        // Only generate if file needs regeneration
+        if (files_to_regenerate.contains(file_path)) {
+            const generated = try processSourceFileWithRegistry(
+                allocator,
+                file_info.source_content,
+                file_path,
+                &registry,
+                config,
+            );
+            defer allocator.free(generated);
 
-        const output_path = try std.fs.path.join(allocator, &.{ output_dir, file_path });
-        defer allocator.free(output_path);
+            const output_path = try std.fs.path.join(allocator, &.{ output_dir, file_path });
+            defer allocator.free(output_path);
 
-        if (std.fs.path.dirname(output_path)) |parent_dir| {
-            std.fs.cwd().makePath(parent_dir) catch |err| switch (err) {
-                error.PathAlreadyExists => {},
-                else => return err,
-            };
+            if (std.fs.path.dirname(output_path)) |parent_dir| {
+                std.fs.cwd().makePath(parent_dir) catch |err| switch (err) {
+                    error.PathAlreadyExists => {},
+                    else => return err,
+                };
+            }
+
+            const output_file = try std.fs.cwd().createFile(output_path, .{});
+            defer output_file.close();
+
+            try output_file.writeAll(generated);
+
+            classes_generated += 1;
+            std.debug.print("  Generated: {s}\n", .{file_path});
         }
 
-        const output_file = try std.fs.cwd().createFile(output_path, .{});
-        defer output_file.close();
+        // Update cache entry for this file
+        const source_path = try std.fs.path.join(allocator, &.{ source_dir, file_path });
+        defer allocator.free(source_path);
 
-        try output_file.writeAll(generated);
+        const content_hash = computeContentHash(file_info.source_content);
+        const mtime_ns = try getFileMtime(source_path);
 
-        classes_generated += 1;
-        std.debug.print("  Generated: {s}\n", .{file_path});
+        // Collect class names and parent names
+        const class_names = try allocator.alloc([]const u8, file_info.classes.items.len);
+        for (file_info.classes.items, 0..) |class_info, i| {
+            class_names[i] = try allocator.dupe(u8, class_info.name);
+        }
+
+        var parent_names_list = std.ArrayList([]const u8){};
+        defer parent_names_list.deinit(allocator);
+        for (file_info.classes.items) |class_info| {
+            if (class_info.parent_name) |parent| {
+                try parent_names_list.append(allocator, try allocator.dupe(u8, parent));
+            }
+        }
+        const parent_names = try parent_names_list.toOwnedSlice(allocator);
+
+        const cache_entry = CacheEntry{
+            .source_path = try allocator.dupe(u8, file_path),
+            .content_hash = content_hash,
+            .mtime_ns = mtime_ns,
+            .class_names = class_names,
+            .parent_names = parent_names,
+        };
+
+        const cache_key = try allocator.dupe(u8, file_path);
+        try new_cache_manifest.entries.put(cache_key, cache_entry);
     }
+
+    // Save updated cache manifest
+    try new_cache_manifest.save(allocator, cache_path);
 
     std.debug.print("\nProcessed {} files, generated {} class files\n", .{ files_processed, classes_generated });
 }
@@ -332,6 +436,7 @@ const MethodDef = struct {
     signature: []const u8,
     return_type: []const u8,
     is_static: bool = false,
+    doc_comment: ?[]const u8 = null,
 };
 
 /// Parsed field definition
@@ -340,6 +445,7 @@ const FieldDef = struct {
     type_name: []const u8,
     default_value: ?[]const u8,
     estimated_size: usize = 0,
+    doc_comment: ?[]const u8 = null,
 };
 
 /// Property access mode
@@ -354,6 +460,7 @@ const PropertyDef = struct {
     type_name: []const u8,
     access: PropertyAccess,
     default_value: ?[]const u8,
+    doc_comment: ?[]const u8 = null,
 };
 
 /// Parsed class definition
@@ -365,15 +472,45 @@ const ParsedClass = struct {
     methods: []MethodDef,
     properties: []PropertyDef,
     allocator: std.mem.Allocator,
+    file_doc: ?[]const u8 = null,
+    class_doc: ?[]const u8 = null,
 
     fn deinit(self: *ParsedClass) void {
         for (self.mixin_names) |mixin_name| {
             self.allocator.free(mixin_name);
         }
         self.allocator.free(self.mixin_names);
+
+        // Free doc comments in fields
+        for (self.fields) |field| {
+            if (field.doc_comment) |doc| {
+                self.allocator.free(doc);
+            }
+        }
         self.allocator.free(self.fields);
+
+        // Free doc comments in methods
+        for (self.methods) |method| {
+            if (method.doc_comment) |doc| {
+                self.allocator.free(doc);
+            }
+        }
         self.allocator.free(self.methods);
+
+        // Free doc comments in properties
+        for (self.properties) |prop| {
+            if (prop.doc_comment) |doc| {
+                self.allocator.free(doc);
+            }
+        }
         self.allocator.free(self.properties);
+
+        if (self.file_doc) |doc| {
+            self.allocator.free(doc);
+        }
+        if (self.class_doc) |doc| {
+            self.allocator.free(doc);
+        }
     }
 };
 
@@ -395,6 +532,254 @@ const FileInfo = struct {
     classes: std.ArrayListUnmanaged(ClassInfo),
     source_content: []const u8,
 };
+
+/// Cache entry for a single zoop source file
+const CacheEntry = struct {
+    /// Path to the source file (relative to source directory)
+    source_path: []const u8,
+    /// SHA-256 hash of source file content
+    content_hash: [32]u8,
+    /// Modification timestamp (nanoseconds since epoch)
+    mtime_ns: i128,
+    /// List of class names defined in this file
+    class_names: [][]const u8,
+    /// List of parent class names (for dependency tracking)
+    parent_names: [][]const u8,
+};
+
+/// Cache manifest containing all file cache entries
+const CacheManifest = struct {
+    /// Version of the cache format (for future compatibility)
+    version: u32 = 1,
+    /// Map of source file path -> cache entry
+    entries: std.StringHashMap(CacheEntry),
+
+    fn init(allocator: std.mem.Allocator) CacheManifest {
+        return .{
+            .entries = std.StringHashMap(CacheEntry).init(allocator),
+        };
+    }
+
+    fn deinit(self: *CacheManifest, allocator: std.mem.Allocator) void {
+        var it = self.entries.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.source_path);
+            for (entry.value_ptr.class_names) |name| {
+                allocator.free(name);
+            }
+            allocator.free(entry.value_ptr.class_names);
+            for (entry.value_ptr.parent_names) |name| {
+                allocator.free(name);
+            }
+            allocator.free(entry.value_ptr.parent_names);
+        }
+        self.entries.deinit();
+    }
+
+    /// Load cache manifest from file
+    fn load(allocator: std.mem.Allocator, cache_path: []const u8) !CacheManifest {
+        const file = std.fs.cwd().openFile(cache_path, .{}) catch |err| {
+            if (err == error.FileNotFound) {
+                // No cache exists yet, return empty manifest
+                return CacheManifest.init(allocator);
+            }
+            return err;
+        };
+        defer file.close();
+
+        const content = try file.readToEndAlloc(allocator, 10 * 1024 * 1024); // 10MB max
+        defer allocator.free(content);
+
+        return try parseManifest(allocator, content);
+    }
+
+    /// Save cache manifest to file
+    fn save(self: *const CacheManifest, allocator: std.mem.Allocator, cache_path: []const u8) !void {
+        const json_str = try serializeManifest(allocator, self);
+        defer allocator.free(json_str);
+
+        // Ensure .zig-cache directory exists
+        const dir_path = std.fs.path.dirname(cache_path) orelse ".zig-cache";
+        try std.fs.cwd().makePath(dir_path);
+
+        const file = try std.fs.cwd().createFile(cache_path, .{});
+        defer file.close();
+
+        try file.writeAll(json_str);
+    }
+};
+
+/// Parse JSON cache manifest
+fn parseManifest(allocator: std.mem.Allocator, json_str: []const u8) !CacheManifest {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+    defer parsed.deinit();
+
+    var manifest = CacheManifest.init(allocator);
+    errdefer manifest.deinit(allocator);
+
+    const root = parsed.value.object;
+    const version = @as(u32, @intCast(root.get("version").?.integer));
+    manifest.version = version;
+
+    const entries_obj = root.get("entries").?.object;
+    var entries_it = entries_obj.iterator();
+    while (entries_it.next()) |kv| {
+        const entry_obj = kv.value_ptr.object;
+
+        const source_path = try allocator.dupe(u8, entry_obj.get("source_path").?.string);
+        errdefer allocator.free(source_path);
+
+        const hash_hex = entry_obj.get("content_hash").?.string;
+        var content_hash: [32]u8 = undefined;
+        _ = try std.fmt.hexToBytes(&content_hash, hash_hex);
+
+        const mtime_ns = entry_obj.get("mtime_ns").?.integer;
+
+        const class_names_arr = entry_obj.get("class_names").?.array;
+        const class_names = try allocator.alloc([]const u8, class_names_arr.items.len);
+        errdefer allocator.free(class_names);
+        for (class_names_arr.items, 0..) |item, i| {
+            class_names[i] = try allocator.dupe(u8, item.string);
+        }
+
+        const parent_names_arr = entry_obj.get("parent_names").?.array;
+        const parent_names = try allocator.alloc([]const u8, parent_names_arr.items.len);
+        errdefer allocator.free(parent_names);
+        for (parent_names_arr.items, 0..) |item, i| {
+            parent_names[i] = try allocator.dupe(u8, item.string);
+        }
+
+        const entry = CacheEntry{
+            .source_path = source_path,
+            .content_hash = content_hash,
+            .mtime_ns = mtime_ns,
+            .class_names = class_names,
+            .parent_names = parent_names,
+        };
+
+        const key = try allocator.dupe(u8, kv.key_ptr.*);
+        try manifest.entries.put(key, entry);
+    }
+
+    return manifest;
+}
+
+/// Write a JSON-escaped string
+fn writeJsonString(writer: anytype, str: []const u8) !void {
+    try writer.writeByte('"');
+    for (str) |c| {
+        switch (c) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => try writer.writeByte(c),
+        }
+    }
+    try writer.writeByte('"');
+}
+
+/// Serialize cache manifest to JSON
+fn serializeManifest(allocator: std.mem.Allocator, manifest: *const CacheManifest) ![]const u8 {
+    var json_buf = std.ArrayList(u8){};
+    errdefer json_buf.deinit(allocator);
+
+    var writer = json_buf.writer(allocator);
+
+    try writer.writeAll("{\"version\":");
+    try writer.print("{d}", .{manifest.version});
+    try writer.writeAll(",\"entries\":{");
+
+    var first = true;
+    var it = manifest.entries.iterator();
+    while (it.next()) |kv| {
+        if (!first) try writer.writeAll(",");
+        first = false;
+
+        try writeJsonString(writer, kv.key_ptr.*);
+        try writer.writeAll(":{");
+
+        try writer.writeAll("\"source_path\":");
+        try writeJsonString(writer, kv.value_ptr.source_path);
+
+        try writer.writeAll(",\"content_hash\":\"");
+        for (kv.value_ptr.content_hash) |byte| {
+            try writer.print("{x:0>2}", .{byte});
+        }
+        try writer.writeAll("\"");
+
+        try writer.writeAll(",\"mtime_ns\":");
+        try writer.print("{d}", .{kv.value_ptr.mtime_ns});
+
+        try writer.writeAll(",\"class_names\":[");
+        for (kv.value_ptr.class_names, 0..) |name, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writeJsonString(writer, name);
+        }
+        try writer.writeAll("]");
+
+        try writer.writeAll(",\"parent_names\":[");
+        for (kv.value_ptr.parent_names, 0..) |name, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writeJsonString(writer, name);
+        }
+        try writer.writeAll("]");
+
+        try writer.writeAll("}");
+    }
+
+    try writer.writeAll("}}");
+
+    return json_buf.toOwnedSlice(allocator);
+}
+
+/// Compute SHA-256 hash of file content
+fn computeContentHash(content: []const u8) [32]u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(content);
+    var hash: [32]u8 = undefined;
+    hasher.final(&hash);
+    return hash;
+}
+
+/// Get file modification time in nanoseconds
+fn getFileMtime(file_path: []const u8) !i128 {
+    const stat = try std.fs.cwd().statFile(file_path);
+    return stat.mtime;
+}
+
+/// Check if a file needs regeneration based on cache
+fn needsRegeneration(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    source_content: []const u8,
+    cache_entry: ?CacheEntry,
+) !bool {
+    // If no cache entry exists, definitely need to regenerate
+    if (cache_entry == null) return true;
+
+    const entry = cache_entry.?;
+
+    // Check timestamp first (fast check)
+    const current_mtime = try getFileMtime(source_path);
+    if (current_mtime != entry.mtime_ns) {
+        // Timestamp changed, check content hash
+        const current_hash = computeContentHash(source_content);
+        if (!std.mem.eql(u8, &current_hash, &entry.content_hash)) {
+            // Content actually changed
+            return true;
+        }
+        // Timestamp changed but content is same (e.g., git checkout)
+        // Still regenerate to update timestamp in cache
+        return true;
+    }
+
+    // Timestamp unchanged, assume file is unchanged
+    _ = allocator;
+    return false;
+}
 
 /// Global registry of all classes found during code generation.
 ///
@@ -460,8 +845,29 @@ const GlobalRegistry = struct {
                 // Note: class_info.name, parent_name, and mixin_names elements
                 // are interned strings freed from the string pool, not here
                 self.allocator.free(class_info.mixin_names); // Free the array, not the strings
+
+                // Free doc comments in fields
+                for (class_info.fields) |field| {
+                    if (field.doc_comment) |doc| {
+                        self.allocator.free(doc);
+                    }
+                }
                 self.allocator.free(class_info.fields);
+
+                // Free doc comments in methods
+                for (class_info.methods) |method| {
+                    if (method.doc_comment) |doc| {
+                        self.allocator.free(doc);
+                    }
+                }
                 self.allocator.free(class_info.methods);
+
+                // Free doc comments in properties
+                for (class_info.properties) |prop| {
+                    if (prop.doc_comment) |doc| {
+                        self.allocator.free(doc);
+                    }
+                }
                 self.allocator.free(class_info.properties);
             }
             entry.value_ptr.classes.deinit(self.allocator);
@@ -493,6 +899,83 @@ const GlobalRegistry = struct {
         return null;
     }
 
+    /// Build a map of class name -> list of descendant class names
+    /// This includes both direct children and all transitive descendants
+    fn buildDescendantMap(self: *GlobalRegistry) !std.StringHashMap(std.ArrayList([]const u8)) {
+        var descendant_map = std.StringHashMap(std.ArrayList([]const u8)).init(self.allocator);
+        errdefer {
+            var it = descendant_map.iterator();
+            while (it.next()) |entry| {
+                entry.value_ptr.deinit(self.allocator);
+            }
+            descendant_map.deinit();
+        }
+
+        // First pass: collect direct children
+        var file_it = self.files.iterator();
+        while (file_it.next()) |file_entry| {
+            for (file_entry.value_ptr.classes.items) |class_info| {
+                if (class_info.parent_name) |parent_name| {
+                    const gop = try descendant_map.getOrPut(parent_name);
+                    if (!gop.found_existing) {
+                        gop.value_ptr.* = .{};
+                    }
+                    try gop.value_ptr.append(self.allocator, class_info.name);
+                }
+            }
+        }
+
+        // Second pass: add transitive descendants
+        // For each class, recursively add descendants of its children
+        var class_names = std.ArrayList([]const u8){};
+        defer class_names.deinit(self.allocator);
+
+        var keys_it = descendant_map.keyIterator();
+        while (keys_it.next()) |key| {
+            try class_names.append(self.allocator, key.*);
+        }
+
+        for (class_names.items) |class_name| {
+            var all_descendants = std.ArrayList([]const u8){};
+            defer all_descendants.deinit(self.allocator);
+
+            try collectAllDescendants(self.allocator, class_name, &descendant_map, &all_descendants);
+
+            // Update the map with all descendants
+            const existing = descendant_map.getPtr(class_name).?;
+            existing.deinit(self.allocator);
+            existing.* = try all_descendants.clone(self.allocator);
+        }
+
+        return descendant_map;
+    }
+
+    /// Helper to recursively collect all descendants of a class
+    fn collectAllDescendants(
+        allocator: std.mem.Allocator,
+        class_name: []const u8,
+        descendant_map: *std.StringHashMap(std.ArrayList([]const u8)),
+        result: *std.ArrayList([]const u8),
+    ) !void {
+        const direct_children = descendant_map.get(class_name) orelse return;
+
+        for (direct_children.items) |child| {
+            // Add this child if not already in result
+            var already_added = false;
+            for (result.items) |existing| {
+                if (std.mem.eql(u8, existing, child)) {
+                    already_added = true;
+                    break;
+                }
+            }
+            if (!already_added) {
+                try result.append(allocator, child);
+                // Recursively add descendants of this child
+                try collectAllDescendants(allocator, child, descendant_map, result);
+            }
+        }
+    }
+
     fn resolveParentReference(
         self: *GlobalRegistry,
         parent_ref: []const u8,
@@ -504,14 +987,32 @@ const GlobalRegistry = struct {
             const import_alias = parent_ref[0..pos];
             const class_name = parent_ref[pos + 1 ..];
 
-            const file_info = self.files.get(current_file) orelse return error.FileNotFound;
+            const file_info = self.files.get(current_file) orelse {
+                return error.FileNotFound;
+            };
             const imported_file = file_info.imports.get(import_alias) orelse {
                 return null;
             };
 
             return self.getClass(imported_file, class_name);
         } else {
-            return self.getClass(current_file, parent_ref);
+            const file_info = self.files.get(current_file) orelse {
+                return error.FileNotFound;
+            };
+
+            const import_ref = file_info.imports.get(parent_ref);
+            if (import_ref) |ref| {
+                const ref_dot_pos = std.mem.lastIndexOfScalar(u8, ref, '.');
+                if (ref_dot_pos) |ref_pos| {
+                    const file_path = ref[0..ref_pos];
+                    const class_name = ref[ref_pos + 1 ..];
+                    return self.getClass(file_path, class_name);
+                } else {
+                    return self.getClass(ref, parent_ref);
+                }
+            } else {
+                return self.getClass(current_file, parent_ref);
+            }
         }
     }
 };
@@ -552,23 +1053,53 @@ fn parseImports(
             break :blk 0;
         };
 
-        const line_segment = source[line_start..import_pos];
+        const line_end = std.mem.indexOfScalarPos(u8, source, quote_end, ';') orelse {
+            pos = quote_end + 1;
+            continue;
+        };
 
-        if (std.mem.indexOf(u8, line_segment, "const")) |const_pos| {
-            const after_const = std.mem.trim(u8, line_segment[const_pos + 5 ..], " \t");
+        const full_line = source[line_start..line_end];
+
+        if (std.mem.indexOf(u8, full_line, "const")) |const_pos| {
+            const after_const = std.mem.trim(u8, full_line[const_pos + 5 ..], " \t");
             if (std.mem.indexOfScalar(u8, after_const, '=')) |eq_pos| {
                 const alias = std.mem.trim(u8, after_const[0..eq_pos], " \t");
                 const alias_owned = try allocator.dupe(u8, alias);
+                errdefer allocator.free(alias_owned);
 
-                const resolved_path = blk: {
-                    if (std.fs.path.dirname(current_file)) |dir| {
-                        break :blk try std.fs.path.join(allocator, &.{ dir, import_path });
+                const after_eq = std.mem.trim(u8, after_const[eq_pos + 1 ..], " \t");
+
+                const resolved_ref = blk: {
+                    if (std.mem.indexOf(u8, after_eq, ").")) |close_paren_dot| {
+                        const class_name = std.mem.trim(u8, after_eq[close_paren_dot + 2 ..], " \t;");
+
+                        const resolved_path: []const u8 = if (std.fs.path.dirname(current_file)) |dir|
+                            try std.fs.path.join(allocator, &.{ dir, import_path })
+                        else
+                            try allocator.dupe(u8, import_path);
+                        defer allocator.free(resolved_path);
+
+                        break :blk try std.fmt.allocPrint(allocator, "{s}.{s}", .{ resolved_path, class_name });
                     } else {
-                        break :blk try allocator.dupe(u8, import_path);
+                        if (std.fs.path.dirname(current_file)) |dir| {
+                            break :blk try std.fs.path.join(allocator, &.{ dir, import_path });
+                        } else {
+                            break :blk try allocator.dupe(u8, import_path);
+                        }
                     }
                 };
+                errdefer allocator.free(resolved_ref);
 
-                try imports.put(alias_owned, resolved_path);
+                const gop = try imports.getOrPut(alias_owned);
+                if (gop.found_existing) {
+                    // Duplicate alias - this shouldn't happen in valid Zig code,
+                    // but if it does, we free the new allocations and keep existing
+                    allocator.free(alias_owned);
+                    allocator.free(resolved_ref);
+                } else {
+                    // New entry - store the value (key already set by getOrPut)
+                    gop.value_ptr.* = resolved_ref;
+                }
             }
         }
 
@@ -627,13 +1158,50 @@ fn scanFileForClasses(
             }
             allocator.free(mixin_names_copy); // Free the original array
 
+            // Deep copy methods with their doc comments
+            const methods_copy = try allocator.alloc(MethodDef, parsed.methods.len);
+            for (parsed.methods, 0..) |method, i| {
+                methods_copy[i] = MethodDef{
+                    .name = method.name,
+                    .source = method.source,
+                    .signature = method.signature,
+                    .return_type = method.return_type,
+                    .is_static = method.is_static,
+                    .doc_comment = if (method.doc_comment) |doc| try allocator.dupe(u8, doc) else null,
+                };
+            }
+
+            // Deep copy fields with their doc comments
+            const fields_copy = try allocator.alloc(FieldDef, parsed.fields.len);
+            for (parsed.fields, 0..) |field, i| {
+                fields_copy[i] = FieldDef{
+                    .name = field.name,
+                    .type_name = field.type_name,
+                    .default_value = field.default_value,
+                    .estimated_size = field.estimated_size,
+                    .doc_comment = if (field.doc_comment) |doc| try allocator.dupe(u8, doc) else null,
+                };
+            }
+
+            // Deep copy properties with their doc comments
+            const properties_copy = try allocator.alloc(PropertyDef, parsed.properties.len);
+            for (parsed.properties, 0..) |prop, i| {
+                properties_copy[i] = PropertyDef{
+                    .name = prop.name,
+                    .type_name = prop.type_name,
+                    .access = prop.access,
+                    .default_value = prop.default_value,
+                    .doc_comment = if (prop.doc_comment) |doc| try allocator.dupe(u8, doc) else null,
+                };
+            }
+
             const class_info = ClassInfo{
                 .name = interned_name,
                 .parent_name = interned_parent,
                 .mixin_names = interned_mixins,
-                .fields = try allocator.dupe(FieldDef, parsed.fields),
-                .methods = try allocator.dupe(MethodDef, parsed.methods),
-                .properties = try allocator.dupe(PropertyDef, parsed.properties),
+                .fields = fields_copy,
+                .methods = methods_copy,
+                .properties = properties_copy,
                 .source_start = parsed.source_start,
                 .source_end = parsed.source_end,
                 .file_path = file_path,
@@ -645,6 +1213,50 @@ fn scanFileForClasses(
             pos = next_start + 1;
         }
     }
+}
+
+/// Strip trailing doc comments (///) from the end of source text.
+/// This is used to avoid duplicating class-level doc comments.
+fn stripTrailingDocComments(source: []const u8) []const u8 {
+    if (source.len == 0) return source;
+
+    var end = source.len;
+
+    // Walk backwards through lines
+    while (end > 0) {
+        // Skip trailing newline if present
+        var line_end = end;
+        if (line_end > 0 and source[line_end - 1] == '\n') {
+            line_end -= 1;
+        }
+        if (line_end > 0 and source[line_end - 1] == '\r') {
+            line_end -= 1;
+        }
+
+        // Find start of current line
+        var line_start = line_end;
+        while (line_start > 0 and source[line_start - 1] != '\n' and source[line_start - 1] != '\r') {
+            line_start -= 1;
+        }
+
+        // Prevent infinite loop - ensure we're making progress
+        if (line_end <= 0 or line_start >= end) break;
+
+        const line = std.mem.trim(u8, source[line_start..line_end], " \t");
+
+        if (std.mem.startsWith(u8, line, "///")) {
+            // This is a doc comment, remove it (including its newline)
+            end = line_start;
+        } else if (line.len == 0) {
+            // Empty line, remove it and continue
+            end = line_start;
+        } else {
+            // Non-doc-comment, non-empty line - stop
+            break;
+        }
+    }
+
+    return source[0..end];
 }
 
 fn filterZoopImport(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
@@ -764,7 +1376,10 @@ fn processSourceFileWithRegistry(
 
         // Ensure we don't go backwards
         const safe_start = @max(last_class_end, class_keyword_start);
-        const segment = try filterZoopImport(allocator, source[last_class_end..safe_start]);
+        const raw_segment = source[last_class_end..safe_start];
+        // Strip trailing doc comments to avoid duplication (we emit them separately)
+        const segment_no_docs = stripTrailingDocComments(raw_segment);
+        const segment = try filterZoopImport(allocator, segment_no_docs);
         defer allocator.free(segment);
         try output.appendSlice(allocator, segment);
 
@@ -879,6 +1494,100 @@ fn detectCircularInheritance(
     }
 }
 
+/// Extract doc comment (///) before a declaration at the given position.
+/// Searches backward from pos to find contiguous /// lines.
+/// Returns the doc comment text without the /// prefix, or null if none found.
+fn extractDocComment(source: []const u8, pos: usize, allocator: std.mem.Allocator) !?[]const u8 {
+    if (pos == 0) return null;
+
+    // Find the start of the line containing pos
+    var line_start = pos;
+    while (line_start > 0 and source[line_start - 1] != '\n') {
+        line_start -= 1;
+    }
+
+    // Collect doc comment lines going backwards
+    var doc_lines: std.ArrayList([]const u8) = .empty;
+    defer doc_lines.deinit(allocator);
+
+    var search_pos = line_start;
+    while (search_pos > 0) {
+        // Find previous line start
+        const prev_line_end = search_pos - 1;
+        if (prev_line_end == 0 or source[prev_line_end] != '\n') break;
+
+        var prev_line_start = prev_line_end;
+        while (prev_line_start > 0 and source[prev_line_start - 1] != '\n') {
+            prev_line_start -= 1;
+        }
+
+        const prev_line = std.mem.trim(u8, source[prev_line_start..prev_line_end], " \t\r");
+
+        // Check if it's a doc comment line
+        if (std.mem.startsWith(u8, prev_line, "///")) {
+            const comment_text = std.mem.trimLeft(u8, prev_line[3..], " \t");
+            try doc_lines.insert(allocator, 0, comment_text);
+            search_pos = prev_line_start;
+        } else if (prev_line.len == 0) {
+            // Empty line - continue looking
+            search_pos = prev_line_start;
+        } else {
+            // Non-doc-comment, non-empty line - stop
+            break;
+        }
+    }
+
+    if (doc_lines.items.len == 0) return null;
+
+    // Join lines with newlines
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    for (doc_lines.items, 0..) |line, i| {
+        if (i > 0) try result.append(allocator, '\n');
+        try result.appendSlice(allocator, line);
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
+/// Extract file-level doc comment (//!) at the start of the file.
+/// Returns the doc comment text without the //! prefix, or null if none found.
+fn extractFileDocComment(source: []const u8, allocator: std.mem.Allocator) !?[]const u8 {
+    var doc_lines: std.ArrayList([]const u8) = .empty;
+    defer doc_lines.deinit(allocator);
+
+    var pos: usize = 0;
+    while (pos < source.len) {
+        // Find line end
+        const line_end = std.mem.indexOfScalarPos(u8, source, pos, '\n') orelse source.len;
+        const line = std.mem.trim(u8, source[pos..line_end], " \t\r");
+
+        if (std.mem.startsWith(u8, line, "//!")) {
+            const comment_text = std.mem.trimLeft(u8, line[3..], " \t");
+            try doc_lines.append(allocator, comment_text);
+        } else if (line.len > 0) {
+            // Non-doc-comment, non-empty line - stop
+            break;
+        }
+
+        pos = if (line_end < source.len) line_end + 1 else source.len;
+    }
+
+    if (doc_lines.items.len == 0) return null;
+
+    // Join lines with newlines
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    for (doc_lines.items, 0..) |line, i| {
+        if (i > 0) try result.append(allocator, '\n');
+        try result.appendSlice(allocator, line);
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
 /// Parse a single class definition starting at the given position
 fn parseClassDefinition(
     allocator: std.mem.Allocator,
@@ -894,15 +1603,41 @@ fn parseClassDefinition(
     source_start: usize,
     source_end: usize,
     allocator: std.mem.Allocator,
+    class_doc: ?[]const u8,
 
     fn deinit(self: *@This()) void {
         for (self.mixin_names) |mixin| {
             self.allocator.free(mixin);
         }
         self.allocator.free(self.mixin_names);
+
+        // Free doc comments in fields
+        for (self.fields) |field| {
+            if (field.doc_comment) |doc| {
+                self.allocator.free(doc);
+            }
+        }
         self.allocator.free(self.fields);
+
+        // Free doc comments in methods
+        for (self.methods) |method| {
+            if (method.doc_comment) |doc| {
+                self.allocator.free(doc);
+            }
+        }
         self.allocator.free(self.methods);
+
+        // Free doc comments in properties
+        for (self.properties) |prop| {
+            if (prop.doc_comment) |doc| {
+                self.allocator.free(doc);
+            }
+        }
         self.allocator.free(self.properties);
+
+        if (self.class_doc) |doc| {
+            self.allocator.free(doc);
+        }
     }
 } {
     const struct_start = std.mem.indexOfPos(u8, source, start_pos, "struct") orelse return null;
@@ -918,6 +1653,9 @@ fn parseClassDefinition(
     var name_start = std.mem.lastIndexOfScalar(u8, source[0..start_pos], '\n') orelse 0;
     if (name_start > 0) name_start += 1;
     const name_section = source[name_start..start_pos];
+
+    // Extract class-level doc comment (before the class declaration)
+    const class_doc = try extractDocComment(source, name_start, allocator);
 
     var class_name: []const u8 = "";
     if (std.mem.indexOf(u8, name_section, "const ")) |const_pos| {
@@ -1014,6 +1752,7 @@ fn parseClassDefinition(
         .source_start = name_start,
         .source_end = closing_paren + 2,
         .allocator = allocator,
+        .class_doc = class_doc,
     };
 }
 
@@ -1196,11 +1935,15 @@ fn parseStructBody(
 
             const is_static = isStaticMethod(signature);
 
+            // Extract doc comment before the method
+            const doc_comment = try extractDocComment(body, fn_start, allocator);
+
             try methods.append(allocator, .{
                 .name = method_name,
                 .source = method_source,
                 .signature = signature,
                 .return_type = return_type_section,
+                .doc_comment = doc_comment,
                 .is_static = is_static,
             });
 
@@ -1247,10 +1990,14 @@ fn parseStructBody(
 
                     const field_type = std.mem.trim(u8, after_colon[0..type_end], " \t,");
 
+                    // Extract doc comment before the field
+                    const field_doc = try extractDocComment(body, pos, allocator);
+
                     try fields.append(allocator, .{
                         .name = field_name,
                         .type_name = field_type,
                         .default_value = null,
+                        .doc_comment = field_doc,
                     });
                 }
             }
@@ -1461,6 +2208,452 @@ fn adaptInitDeinit(
     return try buf.toOwnedSlice(allocator);
 }
 
+/// Generate a smart init function that takes parent args + child fields
+fn generateSmartInit(
+    allocator: std.mem.Allocator,
+    class_name: []const u8,
+    parent_init_source: []const u8,
+    parent_type: []const u8,
+    param_fields: []const FieldDef,
+    param_properties: []const PropertyDef,
+    all_fields: []const FieldDef,
+    all_properties: []const PropertyDef,
+) ![]const u8 {
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(allocator);
+
+    const writer = result.writer(allocator);
+
+    // Parse parent init signature
+    // Example: "pub fn init(allocator: std.mem.Allocator, name_val: []const u8) !Parent {"
+    const params_start = std.mem.indexOf(u8, parent_init_source, "(") orelse return error.InvalidInitSignature;
+    const params_end = std.mem.indexOf(u8, parent_init_source, ")") orelse return error.InvalidInitSignature;
+    const parent_params = parent_init_source[params_start + 1 .. params_end];
+
+    // Extract return type (handle error unions like "!Parent")
+    // Find the closing paren, then look for the return type before "{"
+    const return_type_start = params_end + 1;
+    const brace_pos = std.mem.indexOf(u8, parent_init_source[return_type_start..], "{") orelse return error.InvalidInitSignature;
+    const return_type_section = std.mem.trim(u8, parent_init_source[return_type_start .. return_type_start + brace_pos], " \t\r\n");
+
+    // Extract error union prefix (! or !!) if present
+    var error_prefix: []const u8 = "";
+    if (std.mem.startsWith(u8, return_type_section, "!!")) {
+        error_prefix = "!!";
+    } else if (std.mem.startsWith(u8, return_type_section, "!")) {
+        error_prefix = "!";
+    }
+
+    // Build a map from field/prop name to parameter name
+    // Parse parent params to extract "name: type" pairs
+    var param_name_map = std.StringHashMap([]const u8).init(allocator);
+    defer param_name_map.deinit();
+
+    // Parse params string to find matching field types
+    // This is a simplified parser - looks for "name: Type" patterns
+    var param_iter = std.mem.tokenizeAny(u8, parent_params, ",");
+    while (param_iter.next()) |param_decl| {
+        const trimmed = std.mem.trim(u8, param_decl, " \t\r\n");
+        if (std.mem.indexOf(u8, trimmed, ":")) |colon_pos| {
+            const param_name = std.mem.trim(u8, trimmed[0..colon_pos], " \t\r\n");
+            const param_type = std.mem.trim(u8, trimmed[colon_pos + 1 ..], " \t\r\n");
+
+            // Try to match against fields
+            for (all_fields) |field| {
+                if (std.mem.eql(u8, field.type_name, param_type)) {
+                    // Heuristic: if param ends with "_val" and field name matches prefix, map them
+                    // e.g., "name_val" → "name"
+                    if (std.mem.endsWith(u8, param_name, "_val")) {
+                        const field_prefix = param_name[0 .. param_name.len - 4];
+                        if (std.mem.eql(u8, field.name, field_prefix)) {
+                            try param_name_map.put(field.name, param_name);
+                            continue;
+                        }
+                    }
+                    // Otherwise, if types match and names are similar, map directly
+                    if (std.mem.eql(u8, field.name, param_name)) {
+                        try param_name_map.put(field.name, param_name);
+                    }
+                }
+            }
+        }
+    }
+
+    // Generate signature: pub fn init(allocator, parent_params, field1: Type1, ...) !ClassName {
+    try writer.writeAll("pub fn init(");
+
+    // Always include allocator as first parameter
+    try writer.writeAll("allocator: std.mem.Allocator");
+
+    // Add parent params (skip allocator if it's already in parent params)
+    if (parent_params.len > 0) {
+        // Check if parent_params starts with "allocator:"
+        if (!std.mem.startsWith(u8, std.mem.trim(u8, parent_params, " \t"), "allocator:")) {
+            try writer.writeAll(", ");
+            try writer.writeAll(parent_params);
+        } else {
+            // Parent already has allocator, skip it
+            const comma_pos = std.mem.indexOf(u8, parent_params, ",");
+            if (comma_pos) |pos| {
+                try writer.writeAll(parent_params[pos..]);
+            }
+        }
+    }
+
+    // Add parameters for fields that need to be passed
+    for (param_fields) |field| {
+        try writer.writeAll(", ");
+        try writer.print("{s}: {s}", .{ field.name, field.type_name });
+    }
+
+    // Add parameters for properties
+    for (param_properties) |prop| {
+        try writer.writeAll(", ");
+        try writer.print("{s}: {s}", .{ prop.name, prop.type_name });
+    }
+
+    // Always return error union (for dynamic allocations)
+    try writer.print(") !{s} {{\n", .{class_name});
+
+    // Check if parent's init uses initFields pattern: "return try Parent.initFields("
+    const body_start = std.mem.indexOf(u8, parent_init_source, "{") orelse return error.InvalidInitSignature;
+    const body_end = std.mem.lastIndexOf(u8, parent_init_source, "}") orelse return error.InvalidInitSignature;
+    const parent_body = parent_init_source[body_start + 1 .. body_end];
+
+    const initfields_pattern = try std.fmt.allocPrint(allocator, "{s}.initFields(", .{parent_type});
+    defer allocator.free(initfields_pattern);
+
+    if (std.mem.indexOf(u8, parent_body, initfields_pattern)) |_| {
+        // Parent uses initFields pattern
+        // We need to:
+        // 1. Copy everything before the initFields struct literal
+        // 2. Extend the struct literal with child's additional fields
+        // 3. Copy everything after
+
+        // First, rewrite type names in the entire body
+        const rewritten_body = try rewriteMixinMethod(allocator, parent_body, parent_type, class_name);
+        defer allocator.free(rewritten_body);
+
+        // Find the struct literal in the initFields call: .{
+        const rewritten_initfields_pattern = try std.fmt.allocPrint(allocator, "{s}.initFields(", .{class_name});
+        defer allocator.free(rewritten_initfields_pattern);
+
+        const rewritten_call_pos = std.mem.indexOf(u8, rewritten_body, rewritten_initfields_pattern) orelse {
+            // Fallback if we can't find it
+            try writer.writeAll(rewritten_body);
+            try writer.writeAll("    }\n\n");
+
+            // Still generate initFields for child - inline generation
+            try writer.writeAll("    fn initFields(allocator: std.mem.Allocator, fields: *const struct {");
+            for (all_fields) |field| {
+                try writer.print(" {s}: {s},", .{ field.name, field.type_name });
+            }
+            for (all_properties) |prop| {
+                try writer.print(" {s}: {s},", .{ prop.name, prop.type_name });
+            }
+            try writer.print(" }}) !{s} {{\n", .{class_name});
+            try writer.print("        return {s}{{\n", .{class_name});
+            try writer.writeAll("            .allocator = allocator,\n");
+            for (all_fields) |field| {
+                const needs_alloc = std.mem.eql(u8, field.type_name, "[]const u8") or std.mem.eql(u8, field.type_name, "[]u8");
+                if (needs_alloc) {
+                    try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ field.name, field.name });
+                } else {
+                    try writer.print("            .{s} = fields.{s},\n", .{ field.name, field.name });
+                }
+            }
+            for (all_properties) |prop| {
+                const needs_alloc = std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8");
+                if (needs_alloc) {
+                    try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ prop.name, prop.name });
+                } else {
+                    try writer.print("            .{s} = fields.{s},\n", .{ prop.name, prop.name });
+                }
+            }
+            try writer.writeAll("        };\n");
+            try writer.writeAll("    }");
+            return try result.toOwnedSlice(allocator);
+        };
+
+        // Find the .{ after initFields(allocator,
+        const after_call = rewritten_body[rewritten_call_pos + rewritten_initfields_pattern.len ..];
+        const struct_lit_start = std.mem.indexOf(u8, after_call, ".{") orelse {
+            // No struct literal found, just copy as-is
+            try writer.writeAll(rewritten_body);
+            try writer.writeAll("    }\n\n");
+
+            // Generate initFields for child - inline
+            try writer.writeAll("    fn initFields(allocator: std.mem.Allocator, fields: *const struct {");
+            for (all_fields) |field| {
+                try writer.print(" {s}: {s},", .{ field.name, field.type_name });
+            }
+            for (all_properties) |prop| {
+                try writer.print(" {s}: {s},", .{ prop.name, prop.type_name });
+            }
+            try writer.print(" }}) !{s} {{\n", .{class_name});
+            try writer.print("        return {s}{{\n", .{class_name});
+            try writer.writeAll("            .allocator = allocator,\n");
+            for (all_fields) |field| {
+                const needs_alloc = std.mem.eql(u8, field.type_name, "[]const u8") or std.mem.eql(u8, field.type_name, "[]u8");
+                if (needs_alloc) {
+                    try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ field.name, field.name });
+                } else {
+                    try writer.print("            .{s} = fields.{s},\n", .{ field.name, field.name });
+                }
+            }
+            for (all_properties) |prop| {
+                const needs_alloc = std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8");
+                if (needs_alloc) {
+                    try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ prop.name, prop.name });
+                } else {
+                    try writer.print("            .{s} = fields.{s},\n", .{ prop.name, prop.name });
+                }
+            }
+            try writer.writeAll("        };\n");
+            try writer.writeAll("    }");
+            return try result.toOwnedSlice(allocator);
+        };
+
+        // Find the closing } of the struct literal (before the );)
+        var brace_count: i32 = 1;
+        var search_pos = struct_lit_start + 2; // Start after ".{"
+        const struct_lit_end = blk: {
+            while (search_pos < after_call.len) : (search_pos += 1) {
+                if (after_call[search_pos] == '{') {
+                    brace_count += 1;
+                } else if (after_call[search_pos] == '}') {
+                    brace_count -= 1;
+                    if (brace_count == 0) break :blk search_pos;
+                }
+            }
+            // Couldn't find closing brace
+            try writer.writeAll(rewritten_body);
+            try writer.writeAll("    }\n\n");
+
+            // Generate initFields for child - inline
+            try writer.writeAll("    fn initFields(allocator: std.mem.Allocator, fields: *const struct {");
+            for (all_fields) |field| {
+                try writer.print(" {s}: {s},", .{ field.name, field.type_name });
+            }
+            for (all_properties) |prop| {
+                try writer.print(" {s}: {s},", .{ prop.name, prop.type_name });
+            }
+            try writer.print(" }}) !{s} {{\n", .{class_name});
+            try writer.print("        return {s}{{\n", .{class_name});
+            try writer.writeAll("            .allocator = allocator,\n");
+            for (all_fields) |field| {
+                const needs_alloc = std.mem.eql(u8, field.type_name, "[]const u8") or std.mem.eql(u8, field.type_name, "[]u8");
+                if (needs_alloc) {
+                    try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ field.name, field.name });
+                } else {
+                    try writer.print("            .{s} = fields.{s},\n", .{ field.name, field.name });
+                }
+            }
+            for (all_properties) |prop| {
+                const needs_alloc = std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8");
+                if (needs_alloc) {
+                    try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ prop.name, prop.name });
+                } else {
+                    try writer.print("            .{s} = fields.{s},\n", .{ prop.name, prop.name });
+                }
+            }
+            try writer.writeAll("        };\n");
+            try writer.writeAll("    }");
+            return try result.toOwnedSlice(allocator);
+        };
+
+        // Copy everything up to (but not including) the struct literal closing }
+        var content_before_close = rewritten_call_pos + rewritten_initfields_pattern.len + struct_lit_end;
+
+        // Trim trailing comma and whitespace before the closing }
+        while (content_before_close > 0) {
+            const idx = content_before_close - 1;
+            const c = rewritten_body[idx];
+            if (c == ',' or c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+                content_before_close -= 1;
+            } else {
+                break;
+            }
+        }
+
+        // Copy everything before the struct literal, ensuring we have &.{ syntax
+        const before_struct_lit = rewritten_call_pos + rewritten_initfields_pattern.len + struct_lit_start;
+
+        // Check if there's already a & before the .{
+        const has_ampersand = before_struct_lit > 0 and rewritten_body[before_struct_lit - 1] == '&';
+
+        if (has_ampersand) {
+            // Already has &, just copy everything including &.{
+            try writer.writeAll(rewritten_body[0 .. before_struct_lit + 2]); // Include "&.{"
+        } else {
+            // No &, add it
+            try writer.writeAll(rewritten_body[0..before_struct_lit]);
+            try writer.writeAll("&.{");
+        }
+
+        // Copy from after .{ (or &.{) to before closing }
+        const after_struct_lit_open = before_struct_lit + 2; // Skip past ".{"
+        try writer.writeAll(rewritten_body[after_struct_lit_open..content_before_close]);
+
+        // Add child's additional fields to the struct literal
+        if (param_fields.len > 0 or param_properties.len > 0) {
+            for (param_fields) |field| {
+                try writer.print(",\n            .{s} = {s}", .{ field.name, field.name });
+            }
+            for (param_properties) |prop| {
+                try writer.print(",\n            .{s} = {s}", .{ prop.name, prop.name });
+            }
+        }
+
+        // Copy the rest (starting from the closing } of the struct literal)
+        const copy_end = rewritten_call_pos + rewritten_initfields_pattern.len + struct_lit_end;
+        try writer.writeAll(rewritten_body[copy_end..]);
+        try writer.writeAll("    }\n\n");
+
+        // Generate child's initFields with struct parameter for all fields
+        try writer.writeAll("    fn initFields(allocator: std.mem.Allocator, fields: *const struct {");
+
+        // Add all fields to struct type
+        for (all_fields) |field| {
+            try writer.print(" {s}: {s},", .{ field.name, field.type_name });
+        }
+        for (all_properties) |prop| {
+            try writer.print(" {s}: {s},", .{ prop.name, prop.type_name });
+        }
+
+        try writer.print(" }}) !{s} {{\n", .{class_name});
+        try writer.print("        return {s}{{\n", .{class_name});
+        try writer.writeAll("            .allocator = allocator,\n");
+
+        // Initialize all fields from the struct parameter
+        for (all_fields) |field| {
+            const needs_alloc = std.mem.eql(u8, field.type_name, "[]const u8") or
+                std.mem.eql(u8, field.type_name, "[]u8");
+
+            if (needs_alloc) {
+                try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ field.name, field.name });
+            } else {
+                try writer.print("            .{s} = fields.{s},\n", .{ field.name, field.name });
+            }
+        }
+
+        for (all_properties) |prop| {
+            const needs_alloc = std.mem.eql(u8, prop.type_name, "[]const u8") or
+                std.mem.eql(u8, prop.type_name, "[]u8");
+
+            if (needs_alloc) {
+                try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ prop.name, prop.name });
+            } else {
+                try writer.print("            .{s} = fields.{s},\n", .{ prop.name, prop.name });
+            }
+        }
+
+        try writer.writeAll("        };\n");
+        try writer.writeAll("    }");
+
+        return try result.toOwnedSlice(allocator);
+    }
+
+    // Parent doesn't use initFields - fall back to old behavior (extend struct literal)
+
+    // Find the return statement in parent's body
+    const return_pos = std.mem.lastIndexOf(u8, parent_body, "return") orelse {
+        // No return statement found - just copy body and add return at end
+        try writer.writeAll(parent_body);
+        try writer.print("        return {s}{{\n", .{class_name});
+        try writer.writeAll("            .allocator = allocator,\n");
+        for (all_fields) |field| {
+            try writer.print("            .{s} = {s},\n", .{ field.name, field.name });
+        }
+        for (all_properties) |prop| {
+            try writer.print("            .{s} = {s},\n", .{ prop.name, prop.name });
+        }
+        try writer.writeAll("        };\n");
+        try writer.writeAll("    }");
+        return try result.toOwnedSlice(allocator);
+    };
+
+    // Find the struct literal in the return statement: return .{ or return Parent{
+    const return_section = parent_body[return_pos..];
+    const struct_init_start = blk: {
+        if (std.mem.indexOf(u8, return_section, ".{")) |pos| {
+            break :blk return_pos + pos + 2; // Position after ".{"
+        } else if (std.mem.indexOf(u8, return_section, parent_type)) |type_pos| {
+            if (std.mem.indexOf(u8, return_section[type_pos..], "{")) |open_brace| {
+                break :blk return_pos + type_pos + open_brace + 1; // Position after "Parent{"
+            }
+        }
+        // Couldn't find struct literal, fall back to simple generation
+        try writer.writeAll(parent_body);
+        try writer.writeAll("    }");
+        return try result.toOwnedSlice(allocator);
+    };
+
+    // Find the closing brace of the struct literal
+    var brace_count: i32 = 1;
+    var pos = struct_init_start;
+    const struct_init_end = blk: {
+        while (pos < parent_body.len) : (pos += 1) {
+            if (parent_body[pos] == '{') {
+                brace_count += 1;
+            } else if (parent_body[pos] == '}') {
+                brace_count -= 1;
+                if (brace_count == 0) break :blk pos;
+            }
+        }
+        // Couldn't find closing brace
+        try writer.writeAll(parent_body);
+        try writer.writeAll("    }");
+        return try result.toOwnedSlice(allocator);
+    };
+
+    // Copy everything before the struct literal's closing brace
+    // But trim trailing comma/whitespace
+    var content_end = struct_init_end;
+    while (content_end > 0) : (content_end -= 1) {
+        const c = parent_body[content_end - 1];
+        if (c == ',' or c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+            continue;
+        }
+        break;
+    }
+
+    try writer.writeAll(parent_body[0..content_end]);
+
+    // Add child's additional fields/properties
+    for (param_fields) |field| {
+        // Check if this is a string type that needs allocation
+        const needs_alloc = std.mem.eql(u8, field.type_name, "[]const u8") or
+            std.mem.eql(u8, field.type_name, "[]u8");
+
+        if (needs_alloc) {
+            try writer.print(",\n            .{s} = try allocator.dupe(u8, {s})", .{ field.name, field.name });
+        } else {
+            try writer.print(",\n            .{s} = {s}", .{ field.name, field.name });
+        }
+    }
+
+    for (param_properties) |prop| {
+        try writer.writeAll(",");
+
+        // Check if this is a string type that needs allocation
+        const needs_alloc = std.mem.eql(u8, prop.type_name, "[]const u8") or
+            std.mem.eql(u8, prop.type_name, "[]u8");
+
+        if (needs_alloc) {
+            try writer.print("\n            .{s} = try allocator.dupe(u8, {s})", .{ prop.name, prop.name });
+        } else {
+            try writer.print("\n            .{s} = {s}", .{ prop.name, prop.name });
+        }
+    }
+
+    // Copy the rest of the parent body after the struct literal
+    try writer.writeAll(parent_body[struct_init_end..]);
+    try writer.writeAll("    }");
+
+    return try result.toOwnedSlice(allocator);
+}
+
 fn generateEnhancedClassWithRegistry(
     allocator: std.mem.Allocator,
     parsed: anytype,
@@ -1476,7 +2669,23 @@ fn generateEnhancedClassWithRegistry(
 
     const writer = code.writer(allocator);
 
+    // Emit class-level doc comment if present
+    if (parsed.class_doc) |doc| {
+        var doc_lines = std.mem.splitScalar(u8, doc, '\n');
+        while (doc_lines.next()) |line| {
+            try writer.print("/// {s}\n", .{line});
+        }
+    }
+
     try writer.print("pub const {s} = struct {{\n", .{parsed.name});
+
+    // Always add allocator as first field (Zig-idiomatic pattern)
+    try writer.writeAll("    allocator: std.mem.Allocator,\n");
+
+    // Separator if there are other fields
+    if ((parsed.parent_name != null) or parsed.mixin_names.len > 0 or parsed.properties.len > 0 or parsed.fields.len > 0) {
+        try writer.writeAll("\n");
+    }
 
     // Generate parent fields (flattened - copy fields directly from parent classes)
     if (parsed.parent_name) |parent_ref| {
@@ -1542,10 +2751,22 @@ fn generateEnhancedClassWithRegistry(
     }
 
     for (parsed.properties) |prop| {
+        if (prop.doc_comment) |doc| {
+            var doc_lines = std.mem.splitScalar(u8, doc, '\n');
+            while (doc_lines.next()) |line| {
+                try writer.print("    /// {s}\n", .{line});
+            }
+        }
         try writer.print("    {s}: {s},\n", .{ prop.name, prop.type_name });
     }
 
     for (parsed.fields) |field| {
+        if (field.doc_comment) |doc| {
+            var doc_lines = std.mem.splitScalar(u8, doc, '\n');
+            while (doc_lines.next()) |line| {
+                try writer.print("    /// {s}\n", .{line});
+            }
+        }
         try writer.print("    {s}: {s},\n", .{ field.name, field.type_name });
     }
 
@@ -1553,8 +2774,21 @@ fn generateEnhancedClassWithRegistry(
         try writer.writeAll("\n");
     }
 
+    // First, emit init and deinit if user defined them
     for (parsed.methods) |method| {
-        try writer.print("    {s}\n", .{method.source});
+        if (std.mem.eql(u8, method.name, "init") or std.mem.eql(u8, method.name, "deinit")) {
+            // Emit doc comment if present
+            if (method.doc_comment) |doc| {
+                var doc_lines = std.mem.splitScalar(u8, doc, '\n');
+                while (doc_lines.next()) |line| {
+                    try writer.print("    /// {s}\n", .{line});
+                }
+            }
+            // Rename reserved parameters to avoid shadowing
+            const renamed_source = try renameReservedParams(allocator, method.source);
+            defer allocator.free(renamed_source);
+            try writer.print("    {s}\n", .{renamed_source});
+        }
     }
 
     // Track child method names for override detection (used by both parent and mixin generation)
@@ -1582,7 +2816,9 @@ fn generateEnhancedClassWithRegistry(
         var current_file_path = current_file;
 
         while (current_parent) |parent| {
-            const parent_info = (try registry.resolveParentReference(parent, current_file_path)) orelse break;
+            const parent_info = (try registry.resolveParentReference(parent, current_file_path)) orelse {
+                break;
+            };
 
             for (parent_info.fields) |field| {
                 try parent_field_names.put(field.name, {});
@@ -1611,15 +2847,404 @@ fn generateEnhancedClassWithRegistry(
             current_file_path = parent_info.file_path;
         }
 
+        // Check if parent has init and capture it
+        var parent_init_method: ?MethodDef = null;
+        var parent_init_type: ?[]const u8 = null;
+        for (parent_methods.items) |parent_method| {
+            if (std.mem.eql(u8, parent_method.method.name, "init")) {
+                parent_init_method = parent_method.method;
+                parent_init_type = parent_method.parent_type;
+                break;
+            }
+        }
+
+        // If parent has init and child has fields/properties, generate smart init
+        const need_smart_init = parent_init_method != null and (parsed.fields.len > 0 or parsed.properties.len > 0);
+
+        // First emit init/deinit from parent if not generating smart init
         for (parent_methods.items) |parent_method| {
             const method = parent_method.method;
             const parent_type = parent_method.parent_type;
 
-            // Copy and rewrite parent method (including init/deinit)
-            const rewritten_method = try rewriteMixinMethod(allocator, method.source, parent_type, parsed.name);
-            defer allocator.free(rewritten_method);
+            // Skip parent's init if we're generating a smart init
+            if (need_smart_init and std.mem.eql(u8, method.name, "init")) {
+                continue;
+            }
 
-            try writer.print("    {s}\n", .{rewritten_method});
+            // Only emit init/deinit in this pass
+            if (std.mem.eql(u8, method.name, "init") or std.mem.eql(u8, method.name, "deinit")) {
+                // Emit doc comment if present
+                if (method.doc_comment) |doc| {
+                    var doc_lines = std.mem.splitScalar(u8, doc, '\n');
+                    while (doc_lines.next()) |line| {
+                        try writer.print("    /// {s}\n", .{line});
+                    }
+                }
+                // Copy and rewrite parent method
+                const rewritten_method = try rewriteMixinMethod(allocator, method.source, parent_type, parsed.name);
+                defer allocator.free(rewritten_method);
+
+                try writer.print("    {s}\n", .{rewritten_method});
+            }
+        }
+
+        // Generate smart init if needed
+        if (need_smart_init) {
+            // Find the topmost ancestor with init
+            var topmost_init: ?MethodDef = null;
+            var topmost_init_type: ?[]const u8 = null;
+            var curr_parent: ?[]const u8 = parent_ref;
+            var curr_file = current_file;
+
+            while (curr_parent) |parent| {
+                const parent_info = (try registry.resolveParentReference(parent, curr_file)) orelse break;
+
+                // Check if this parent has init
+                for (parent_info.methods) |method| {
+                    if (std.mem.eql(u8, method.name, "init")) {
+                        topmost_init = method;
+                        topmost_init_type = parent_info.name;
+                    }
+                }
+
+                curr_parent = parent_info.parent_name;
+                curr_file = parent_info.file_path;
+            }
+
+            // Collect fields that need to be in init params
+            // These are fields from ancestors without init + current class fields
+            var init_param_fields: std.ArrayList(FieldDef) = .empty;
+            defer init_param_fields.deinit(allocator);
+            var init_param_props: std.ArrayList(PropertyDef) = .empty;
+            defer init_param_props.deinit(allocator);
+
+            // Walk hierarchy and collect fields from classes that don't have init
+            curr_parent = parent_ref;
+            curr_file = current_file;
+            while (curr_parent) |parent| {
+                const parent_info = (try registry.resolveParentReference(parent, curr_file)) orelse break;
+
+                // Check if this parent has its own init
+                var has_own_init = false;
+                for (parent_info.methods) |method| {
+                    if (std.mem.eql(u8, method.name, "init")) {
+                        has_own_init = true;
+                        break;
+                    }
+                }
+
+                // If no init, need params for these fields
+                if (!has_own_init) {
+                    for (parent_info.fields) |field| {
+                        try init_param_fields.append(allocator, field);
+                    }
+                    for (parent_info.properties) |prop| {
+                        try init_param_props.append(allocator, prop);
+                    }
+                } else {
+                    // Found parent with init, stop here
+                    break;
+                }
+
+                curr_parent = parent_info.parent_name;
+                curr_file = parent_info.file_path;
+            }
+
+            // Reverse to get correct order (ancestors first)
+            std.mem.reverse(FieldDef, init_param_fields.items);
+            std.mem.reverse(PropertyDef, init_param_props.items);
+
+            // Add current class fields to params
+            for (parsed.fields) |field| {
+                try init_param_fields.append(allocator, field);
+            }
+            for (parsed.properties) |prop| {
+                try init_param_props.append(allocator, prop);
+            }
+
+            // For initialization body, we need ALL fields (parent + current)
+            // Collect all parent fields again
+            var all_init_fields: std.ArrayList(FieldDef) = .empty;
+            defer all_init_fields.deinit(allocator);
+            var all_init_props: std.ArrayList(PropertyDef) = .empty;
+            defer all_init_props.deinit(allocator);
+
+            // Walk up entire parent hierarchy to collect all fields
+            curr_parent = parent_ref;
+            curr_file = current_file;
+            while (curr_parent) |parent| {
+                const parent_info = (try registry.resolveParentReference(parent, curr_file)) orelse break;
+
+                for (parent_info.fields) |field| {
+                    try all_init_fields.append(allocator, field);
+                }
+                for (parent_info.properties) |prop| {
+                    try all_init_props.append(allocator, prop);
+                }
+
+                curr_parent = parent_info.parent_name;
+                curr_file = parent_info.file_path;
+            }
+
+            // Reverse to get correct order (grandparent first)
+            std.mem.reverse(FieldDef, all_init_fields.items);
+            std.mem.reverse(PropertyDef, all_init_props.items);
+
+            // Add current class fields
+            for (parsed.fields) |field| {
+                try all_init_fields.append(allocator, field);
+            }
+            for (parsed.properties) |prop| {
+                try all_init_props.append(allocator, prop);
+            }
+
+            const smart_init = try generateSmartInit(
+                allocator,
+                parsed.name,
+                topmost_init.?.source,
+                topmost_init_type.?,
+                init_param_fields.items,
+                init_param_props.items,
+                all_init_fields.items,
+                all_init_props.items,
+            );
+            defer allocator.free(smart_init);
+            try writer.print("    {s}\n", .{smart_init});
+        }
+    }
+
+    // Generate default init if no init exists and class has fields
+    {
+        const has_init = blk: {
+            for (parsed.methods) |method| {
+                if (std.mem.eql(u8, method.name, "init")) break :blk true;
+            }
+            break :blk false;
+        };
+
+        const has_parent_init = parsed.parent_name != null and blk: {
+            var curr_parent: ?[]const u8 = parsed.parent_name;
+            var curr_file = current_file;
+            while (curr_parent) |parent| {
+                const parent_info = (try registry.resolveParentReference(parent, curr_file)) orelse break;
+                for (parent_info.methods) |method| {
+                    if (std.mem.eql(u8, method.name, "init")) break :blk true;
+                }
+                curr_parent = parent_info.parent_name;
+                curr_file = parent_info.file_path;
+            }
+            break :blk false;
+        };
+
+        // Generate default init if no init exists (neither in this class nor inherited)
+        if (!has_init and !has_parent_init) {
+            if (parsed.methods.len > 0) try writer.writeAll("\n");
+
+            // Collect ALL fields (parent + own) for init parameters
+            var all_fields_for_init: std.ArrayList(FieldDef) = .empty;
+            defer all_fields_for_init.deinit(allocator);
+            var all_props_for_init: std.ArrayList(PropertyDef) = .empty;
+            defer all_props_for_init.deinit(allocator);
+
+            // Collect parent fields
+            if (parsed.parent_name) |parent_ref| {
+                var curr_parent: ?[]const u8 = parent_ref;
+                var curr_file = current_file;
+                while (curr_parent) |parent| {
+                    const parent_info = (try registry.resolveParentReference(parent, curr_file)) orelse break;
+                    for (parent_info.fields) |field| {
+                        try all_fields_for_init.append(allocator, field);
+                    }
+                    for (parent_info.properties) |prop| {
+                        try all_props_for_init.append(allocator, prop);
+                    }
+                    curr_parent = parent_info.parent_name;
+                    curr_file = parent_info.file_path;
+                }
+                // Reverse to get correct order (grandparent first)
+                std.mem.reverse(FieldDef, all_fields_for_init.items);
+                std.mem.reverse(PropertyDef, all_props_for_init.items);
+            }
+
+            // Collect mixin fields
+            for (parsed.mixin_names) |mixin_ref| {
+                const mixin_info = (try registry.resolveParentReference(mixin_ref, current_file)) orelse continue;
+                for (mixin_info.fields) |field| {
+                    try all_fields_for_init.append(allocator, field);
+                }
+                for (mixin_info.properties) |prop| {
+                    try all_props_for_init.append(allocator, prop);
+                }
+            }
+
+            // Add own fields
+            try all_fields_for_init.appendSlice(allocator, parsed.fields);
+            try all_props_for_init.appendSlice(allocator, parsed.properties);
+
+            // Generate init that calls initFields
+            try writer.writeAll("    pub fn init(allocator: std.mem.Allocator");
+
+            // Add parameters for all fields
+            for (all_fields_for_init.items) |field| {
+                try writer.print(", {s}: {s}", .{ field.name, field.type_name });
+            }
+            for (all_props_for_init.items) |prop| {
+                try writer.print(", {s}: {s}", .{ prop.name, prop.type_name });
+            }
+
+            try writer.print(") !{s} {{\n", .{parsed.name});
+            try writer.print("        return try {s}.initFields(allocator, &.{{\n", .{parsed.name});
+
+            // Pass all parameters to initFields
+            var first = true;
+            for (all_fields_for_init.items) |field| {
+                if (!first) try writer.writeAll(",\n");
+                try writer.print("            .{s} = {s}", .{ field.name, field.name });
+                first = false;
+            }
+            for (all_props_for_init.items) |prop| {
+                if (!first) try writer.writeAll(",\n");
+                try writer.print("            .{s} = {s}", .{ prop.name, prop.name });
+                first = false;
+            }
+
+            // Only add trailing comma if there are fields
+            if (!first) {
+                try writer.writeAll(",\n        });\n");
+            } else {
+                try writer.writeAll("\n        });\n");
+            }
+            try writer.writeAll("    }\n");
+
+            // Generate initFields helper
+            try writer.writeAll("    fn initFields(allocator: std.mem.Allocator, fields: *const struct {");
+
+            // Add all fields to struct type
+            for (all_fields_for_init.items) |field| {
+                try writer.print(" {s}: {s},", .{ field.name, field.type_name });
+            }
+            for (all_props_for_init.items) |prop| {
+                try writer.print(" {s}: {s},", .{ prop.name, prop.type_name });
+            }
+
+            try writer.print(" }}) !{s} {{\n", .{parsed.name});
+            // If no fields, suppress unused parameter warning
+            if (all_fields_for_init.items.len == 0 and all_props_for_init.items.len == 0) {
+                try writer.writeAll("        _ = fields;\n");
+            }
+            try writer.print("        return .{{\n", .{});
+            try writer.writeAll("            .allocator = allocator,\n");
+
+            // Initialize all fields (allocate strings)
+            for (all_fields_for_init.items) |field| {
+                const needs_alloc = std.mem.eql(u8, field.type_name, "[]const u8") or
+                    std.mem.eql(u8, field.type_name, "[]u8");
+                if (needs_alloc) {
+                    try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ field.name, field.name });
+                } else {
+                    try writer.print("            .{s} = fields.{s},\n", .{ field.name, field.name });
+                }
+            }
+
+            // Initialize properties
+            for (all_props_for_init.items) |prop| {
+                const needs_alloc = std.mem.eql(u8, prop.type_name, "[]const u8") or
+                    std.mem.eql(u8, prop.type_name, "[]u8");
+                if (needs_alloc) {
+                    try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ prop.name, prop.name });
+                } else {
+                    try writer.print("            .{s} = fields.{s},\n", .{ prop.name, prop.name });
+                }
+            }
+
+            try writer.writeAll("        };\n");
+            try writer.writeAll("    }\n");
+        }
+    }
+
+    // Generate deinit method to free dynamic fields (including inherited ones)
+    // Track if deinit exists (user-written or generated)
+    var has_deinit = false;
+    for (parsed.methods) |method| {
+        if (std.mem.eql(u8, method.name, "deinit")) {
+            has_deinit = true;
+            break;
+        }
+    }
+
+    {
+        // Collect all string fields that need freeing (from entire hierarchy)
+        var string_fields: std.ArrayList([]const u8) = .empty;
+        defer string_fields.deinit(allocator);
+
+        // Collect parent string fields
+        if (parsed.parent_name) |parent_ref| {
+            var curr_parent: ?[]const u8 = parent_ref;
+            var curr_file = current_file;
+
+            // Walk up hierarchy to collect all string fields
+            var all_parent_string_fields: std.ArrayList([]const u8) = .empty;
+            defer all_parent_string_fields.deinit(allocator);
+
+            while (curr_parent) |parent| {
+                const parent_info = (try registry.resolveParentReference(parent, curr_file)) orelse break;
+
+                for (parent_info.fields) |field| {
+                    if (std.mem.eql(u8, field.type_name, "[]const u8") or std.mem.eql(u8, field.type_name, "[]u8")) {
+                        try all_parent_string_fields.append(allocator, field.name);
+                    }
+                }
+                for (parent_info.properties) |prop| {
+                    if (std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8")) {
+                        try all_parent_string_fields.append(allocator, prop.name);
+                    }
+                }
+
+                curr_parent = parent_info.parent_name;
+                curr_file = parent_info.file_path;
+            }
+
+            // Reverse to get correct order
+            std.mem.reverse([]const u8, all_parent_string_fields.items);
+            try string_fields.appendSlice(allocator, all_parent_string_fields.items);
+        }
+
+        // Collect mixin string fields
+        for (parsed.mixin_names) |mixin_ref| {
+            const mixin_info = (try registry.resolveParentReference(mixin_ref, current_file)) orelse continue;
+            for (mixin_info.fields) |field| {
+                if (std.mem.eql(u8, field.type_name, "[]const u8") or std.mem.eql(u8, field.type_name, "[]u8")) {
+                    try string_fields.append(allocator, field.name);
+                }
+            }
+            for (mixin_info.properties) |prop| {
+                if (std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8")) {
+                    try string_fields.append(allocator, prop.name);
+                }
+            }
+        }
+
+        // Add own string fields
+        for (parsed.fields) |field| {
+            if (std.mem.eql(u8, field.type_name, "[]const u8") or std.mem.eql(u8, field.type_name, "[]u8")) {
+                try string_fields.append(allocator, field.name);
+            }
+        }
+        for (parsed.properties) |prop| {
+            if (std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8")) {
+                try string_fields.append(allocator, prop.name);
+            }
+        }
+
+        if (string_fields.items.len > 0 and !has_deinit) {
+            try writer.writeAll("    pub fn deinit(self: *");
+            try writer.print("{s}) void {{\n", .{parsed.name});
+
+            for (string_fields.items) |field_name| {
+                try writer.print("        self.allocator.free(self.{s});\n", .{field_name});
+            }
+
+            try writer.writeAll("    }\n");
         }
     }
 
@@ -1638,12 +3263,93 @@ fn generateEnhancedClassWithRegistry(
                 const is_init_or_deinit = std.mem.eql(u8, method.name, "init") or std.mem.eql(u8, method.name, "deinit");
                 if (method.is_static and !is_init_or_deinit) continue;
 
+                // Emit doc comment if present
+                if (method.doc_comment) |doc| {
+                    var doc_lines = std.mem.splitScalar(u8, doc, '\n');
+                    while (doc_lines.next()) |line| {
+                        try writer.print("    /// {s}\n", .{line});
+                    }
+                }
                 // Copy all methods including init/deinit (with type rewriting)
                 const rewritten_method = try rewriteMixinMethod(allocator, method.source, mixin_info.name, parsed.name);
                 defer allocator.free(rewritten_method);
 
                 try writer.print("    {s}\n", .{rewritten_method});
             }
+        }
+    }
+
+    // Emit other user methods (excluding init/deinit which were emitted earlier)
+    for (parsed.methods) |method| {
+        if (!std.mem.eql(u8, method.name, "init") and !std.mem.eql(u8, method.name, "deinit")) {
+            // Emit doc comment if present
+            if (method.doc_comment) |doc| {
+                var doc_lines = std.mem.splitScalar(u8, doc, '\n');
+                while (doc_lines.next()) |line| {
+                    try writer.print("    /// {s}\n", .{line});
+                }
+            }
+            // Rename reserved parameters to avoid shadowing
+            const renamed_source = try renameReservedParams(allocator, method.source);
+            defer allocator.free(renamed_source);
+            try writer.print("    {s}\n", .{renamed_source});
+        }
+    }
+
+    // Emit other parent methods (excluding init/deinit which were emitted earlier)
+    if (parsed.parent_name) |parent_ref| {
+        var parent_field_names_for_other_methods = std.StringHashMap(void).init(allocator);
+        defer parent_field_names_for_other_methods.deinit();
+
+        const ParentMethodForOther = struct {
+            method: MethodDef,
+            parent_type: []const u8,
+        };
+
+        var parent_methods_for_other: std.ArrayList(ParentMethodForOther) = .empty;
+        defer parent_methods_for_other.deinit(allocator);
+
+        var curr_parent: ?[]const u8 = parent_ref;
+        var curr_file = current_file;
+
+        while (curr_parent) |parent| {
+            const parent_info = (try registry.resolveParentReference(parent, curr_file)) orelse break;
+
+            for (parent_info.methods) |method| {
+                // Skip if child already has this method
+                if (child_method_names.contains(method.name)) continue;
+
+                // Skip static methods EXCEPT init and deinit (but we already emitted those)
+                const is_init_or_deinit = std.mem.eql(u8, method.name, "init") or std.mem.eql(u8, method.name, "deinit");
+                if (method.is_static and !is_init_or_deinit) continue;
+                if (is_init_or_deinit) continue; // Already emitted
+
+                try parent_methods_for_other.append(allocator, .{
+                    .method = method,
+                    .parent_type = parent_info.name,
+                });
+            }
+
+            curr_parent = parent_info.parent_name;
+            curr_file = parent_info.file_path;
+        }
+
+        // Emit other parent methods
+        for (parent_methods_for_other.items) |parent_method| {
+            const method = parent_method.method;
+            const parent_type = parent_method.parent_type;
+
+            // Emit doc comment if present
+            if (method.doc_comment) |doc| {
+                var doc_lines = std.mem.splitScalar(u8, doc, '\n');
+                while (doc_lines.next()) |line| {
+                    try writer.print("    /// {s}\n", .{line});
+                }
+            }
+            const rewritten_method = try rewriteMixinMethod(allocator, method.source, parent_type, parsed.name);
+            defer allocator.free(rewritten_method);
+
+            try writer.print("    {s}\n", .{rewritten_method});
         }
     }
 
@@ -1746,6 +3452,124 @@ fn rewriteMixinMethod(
             if (before_ok and after_ok) {
                 try result.appendSlice(allocator, child_type_name);
                 pos += mixin_type_name.len;
+                continue;
+            }
+        }
+
+        try result.append(allocator, method_source[pos]);
+        pos += 1;
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+/// Rename reserved parameter names (init, deinit) to avoid shadowing conflicts
+/// E.g., "fn foo(init: Bar)" -> "fn foo(init_: Bar)" and renames all usages in body
+fn renameReservedParams(
+    allocator: std.mem.Allocator,
+    method_source: []const u8,
+) ![]u8 {
+    const reserved_params = [_][]const u8{ "init", "deinit" };
+
+    var result: []u8 = try allocator.dupe(u8, method_source);
+
+    for (reserved_params) |param_name| {
+        const new_result = try renameParameter(allocator, result, param_name);
+        allocator.free(result);
+        result = new_result;
+    }
+
+    return result;
+}
+
+/// Rename a specific parameter throughout a method
+fn renameParameter(
+    allocator: std.mem.Allocator,
+    method_source: []const u8,
+    param_name: []const u8,
+) ![]u8 {
+    const new_name = try std.fmt.allocPrint(allocator, "{s}_", .{param_name});
+    defer allocator.free(new_name);
+
+    // Find parameter list
+    const fn_pos = std.mem.indexOf(u8, method_source, "fn ") orelse return try allocator.dupe(u8, method_source);
+    const paren_start = std.mem.indexOfPos(u8, method_source, fn_pos, "(") orelse return try allocator.dupe(u8, method_source);
+    const paren_end = findMatchingParen(method_source, paren_start) orelse return try allocator.dupe(u8, method_source);
+
+    const param_list = method_source[paren_start .. paren_end + 1];
+
+    // Check if parameter exists in param list with proper boundaries
+    const search_pattern = try std.fmt.allocPrint(allocator, "{s}:", .{param_name});
+    defer allocator.free(search_pattern);
+
+    var param_found = false;
+    var search_pos: usize = 0;
+    while (std.mem.indexOfPos(u8, param_list, search_pos, search_pattern)) |found_pos| {
+        // Check if it's a full identifier match
+        const before_ok = found_pos == 0 or !isIdentifierChar(param_list[found_pos - 1]);
+        if (before_ok) {
+            param_found = true;
+            break;
+        }
+        search_pos = found_pos + 1;
+    }
+
+    if (!param_found) {
+        return try allocator.dupe(u8, method_source);
+    }
+
+    // Replace all occurrences of the parameter name throughout the method
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    var pos: usize = 0;
+    var in_string = false;
+    var in_comment = false;
+
+    while (pos < method_source.len) {
+        // Handle string literals
+        if (in_string) {
+            if (method_source[pos] == '"' and (pos == 0 or method_source[pos - 1] != '\\')) {
+                in_string = false;
+            }
+            try result.append(allocator, method_source[pos]);
+            pos += 1;
+            continue;
+        }
+
+        // Handle comments
+        if (in_comment) {
+            if (method_source[pos] == '\n') {
+                in_comment = false;
+            }
+            try result.append(allocator, method_source[pos]);
+            pos += 1;
+            continue;
+        }
+
+        if (method_source[pos] == '"') {
+            in_string = true;
+            try result.append(allocator, method_source[pos]);
+            pos += 1;
+            continue;
+        }
+
+        if (pos + 1 < method_source.len and method_source[pos] == '/' and method_source[pos + 1] == '/') {
+            in_comment = true;
+            try result.append(allocator, method_source[pos]);
+            pos += 1;
+            continue;
+        }
+
+        // Check for parameter name with proper word boundaries
+        if (std.mem.startsWith(u8, method_source[pos..], param_name)) {
+            const before_ok = pos == 0 or !isIdentifierChar(method_source[pos - 1]);
+            const after_pos = pos + param_name.len;
+            const after_ok = after_pos >= method_source.len or !isIdentifierChar(method_source[after_pos]);
+
+            if (before_ok and after_ok) {
+                try result.appendSlice(allocator, new_name);
+                pos += param_name.len;
                 continue;
             }
         }

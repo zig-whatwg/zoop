@@ -1,0 +1,87 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    // Get zoop dependency
+    const zoop_dep = b.dependency("zoop", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Import zoop build helpers
+    const zoop = zoop_dep.module("zoop");
+
+    // ===================================================================
+    // Option 1: Using system-installed zoop-codegen
+    // ===================================================================
+    // This assumes you have zoop-codegen in your PATH
+    const zoop_step = @import("zoop").addZoopCodegen(b, .{
+        .source_dir = "zoop_src",     // Your zoop source files
+        .output_dir = "src",           // Where to generate files
+        .getter_prefix = "get_",       // Optional: customize prefixes
+        .setter_prefix = "set_",
+    });
+
+    // ===================================================================
+    // Option 2: Using locally built zoop-codegen (recommended for development)
+    // ===================================================================
+    // Build zoop-codegen from the dependency
+    const zoop_exe = zoop_dep.artifact("zoop-codegen");
+    const zoop_step_local = @import("zoop").addZoopCodegenFromBinary(b, zoop_exe, .{
+        .source_dir = "zoop_src",
+        .output_dir = "src",
+    });
+
+    // Add cache cleaning step (run with: zig build clean-cache)
+    _ = @import("zoop").addCleanCacheStep(b);
+
+    // ===================================================================
+    // Your application build
+    // ===================================================================
+    const exe = b.addExecutable(.{
+        .name = "myapp",
+        .root_source_file = b.path("src/main.zig"),  // Use GENERATED src/
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // IMPORTANT: Make sure codegen runs before compilation
+    exe.step.dependOn(zoop_step_local); // or zoop_step
+
+    // Add zoop module to your executable
+    exe.root_module.addImport("zoop", zoop);
+
+    b.installArtifact(exe);
+
+    // ===================================================================
+    // Run command
+    // ===================================================================
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+
+    const run_step = b.step("run", "Run the app");
+    run_step.dependOn(&run_cmd.step);
+
+    // ===================================================================
+    // Test command
+    // ===================================================================
+    const unit_tests = b.addTest(.{
+        .root_source_file = b.path("src/main.zig"),  // Use GENERATED src/
+        .target = target,
+        .optimize = optimize,
+    });
+    
+    // Tests also depend on codegen
+    unit_tests.step.dependOn(zoop_step_local); // or zoop_step
+    unit_tests.root_module.addImport("zoop", zoop);
+
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_unit_tests.step);
+}

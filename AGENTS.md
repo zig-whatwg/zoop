@@ -17,6 +17,34 @@ Learn more: [Anthropic's Skills announcement](https://www.anthropic.com/news/ski
 
 ## Available Skills
 
+### Critical Skills
+
+#### 0. **pre-commit** (`skills/pre-commit/`) ⚠️ **MANDATORY**
+
+**Purpose**: Ensure all code quality checks pass before every git commit
+
+**When to use:**
+- **ALWAYS** before running `git commit`
+- User asks to commit changes
+- Creating a pull request
+- Preparing code for review
+
+**Mandatory checks:**
+1. ✅ `zig fmt --check src/ tests/` - Format check (NON-NEGOTIABLE)
+2. ✅ `zig build` - Build check
+3. ✅ `zig build test` - Test check
+4. ✅ Regenerate code if needed (for code generator projects)
+
+**Why this is critical:**
+- CI enforces formatting - unformatted code WILL fail CI
+- Prevents broken builds from being committed
+- Catches regressions before they reach remote
+- Maintains code quality standards
+
+**Rule**: NEVER commit without running format check first.
+
+---
+
 ### Directory Structure
 
 All skills are located in the `skills/` directory:
@@ -24,8 +52,9 @@ All skills are located in the `skills/` directory:
 ```
 zoop/
 ├── skills/
+│   ├── pre-commit/            # Pre-commit checks (CRITICAL!)
 │   ├── zig/                   # General Zig programming
-│   ├── zoop-workflow/         # Developing with Zoop (NEW!)
+│   ├── zoop-workflow/         # Developing with Zoop
 │   ├── zoop-architecture/     # Understanding Zoop's design
 │   ├── zoop-codegen/          # Working with code generation
 │   ├── zoop-testing/          # Running and writing tests

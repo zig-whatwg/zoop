@@ -143,7 +143,15 @@ git diff zoop_src/user.zig  # Your changes
 git diff src/user.zig       # What zoop generated
 ```
 
-### Step 5: Commit Both
+### Step 5: Format and Verify
+
+```bash
+zig fmt --check src/ zoop_src/ tests/
+```
+
+**CRITICAL**: Always run `zig fmt --check` before committing. If it fails, run `zig fmt` to fix formatting.
+
+### Step 6: Commit Both
 
 ```bash
 git add zoop_src/user.zig src/user.zig
@@ -328,6 +336,8 @@ zig build
 | Override method | Define method with same name in child | `zoop_src/admin.zig` |
 | Build project | `zig build` | N/A |
 | Run tests | `zig build test` | N/A |
+| Check formatting | `zig fmt --check src/ zoop_src/ tests/` | N/A |
+| Fix formatting | `zig fmt src/ zoop_src/ tests/` | N/A |
 | Force regeneration | `zig build clean-cache` then `zig build` | N/A |
 | Check what changed | `git diff src/` | N/A |
 
@@ -496,7 +506,13 @@ pub fn build(b: *std.Build) void {
    git diff src/user.zig src/admin.zig
    ```
 
-5. **Commit both source and generated:**
+5. **Format check (REQUIRED before commit):**
+   ```bash
+   zig fmt --check src/ zoop_src/ tests/
+   # If fails, run: zig fmt src/ zoop_src/ tests/
+   ```
+
+6. **Commit both source and generated:**
    ```bash
    git add zoop_src/ src/
    git commit -m "Add role management to Admin"
@@ -548,13 +564,15 @@ Cache tracks parent relationships. If inheritance chain is broken:
 1. ❌ NEVER edit generated files (`src/`)
 2. ✅ ONLY edit zoop source files (`zoop_src/`)
 3. ✅ Build automatically regenerates changed files + descendants
-4. ✅ Commit BOTH source and generated files together
-5. ✅ Clear cache if things seem wrong
+4. ✅ Run `zig fmt --check` before EVERY commit (REQUIRED)
+5. ✅ Commit BOTH source and generated files together
+6. ✅ Clear cache if things seem wrong
 
 **Development cycle:**
-Edit `zoop_src/` → `zig build` → `zig build test` → Review `src/` → Commit both
+Edit `zoop_src/` → `zig build` → `zig build test` → `zig fmt --check` → Review `src/` → Commit both
 
 **When in doubt:**
 - Check which directory you're editing (should be `zoop_src/`)
 - Check `build.zig` to find source_dir and output_dir
 - Clear cache and rebuild if something seems cached incorrectly
+- Always run `zig fmt --check` before committing

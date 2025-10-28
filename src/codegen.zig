@@ -332,7 +332,10 @@ pub fn generateAllClasses(
                 while (find_it.next()) |find_entry| {
                     for (find_entry.value_ptr.classes.items) |find_class| {
                         if (std.mem.eql(u8, find_class.name, descendant_name)) {
-                            try files_to_regenerate.put(try allocator.dupe(u8, find_entry.key_ptr.*), {});
+                            // Only dupe the key if not already in the map
+                            if (!files_to_regenerate.contains(find_entry.key_ptr.*)) {
+                                try files_to_regenerate.put(try allocator.dupe(u8, find_entry.key_ptr.*), {});
+                            }
                             break;
                         }
                     }

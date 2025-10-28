@@ -25,6 +25,20 @@ For detailed reference materials, see `resources/` directory.
 
 ## Core Patterns
 
+### Code Formatting (CRITICAL)
+
+**ALWAYS run `zig fmt --check` before committing code.**
+
+```bash
+# Check if files are formatted correctly
+zig fmt --check src/ tests/
+
+# Format files
+zig fmt src/ tests/
+```
+
+The Zig formatter is the official standard. All code MUST be formatted before commits.
+
 ### Naming Conventions
 
 ```zig
@@ -519,6 +533,8 @@ For detailed information, see:
 - `scripts/new-project.sh` - Project initialization script
 
 ## Quick Reference
+
+**Formatting**: ALWAYS run `zig fmt --check` before committing. This is non-negotiable.
 
 **Memory Management**: Use factory pattern with string interning for production, direct creation for tests.
 

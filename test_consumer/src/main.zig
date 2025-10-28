@@ -19,11 +19,13 @@ pub const Dog = zoop.class(struct {
     }
 });
 
-pub fn main() void {
-    var dog = Dog{
-        .name = "Buddy",
-        .breed = "Golden Retriever",
-    };
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var dog = try Dog.init(allocator, "Buddy", "Golden Retriever");
+    defer dog.deinit();
 
     dog.makeSound();
     dog.bark();

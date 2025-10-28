@@ -1903,9 +1903,20 @@ fn parseStructBody(
 
         if (pos >= body.len) break;
 
-        if (std.mem.startsWith(u8, body[pos..], "pub fn ") or std.mem.startsWith(u8, body[pos..], "fn ")) {
+        if (std.mem.startsWith(u8, body[pos..], "pub inline fn ") or
+            std.mem.startsWith(u8, body[pos..], "pub fn ") or
+            std.mem.startsWith(u8, body[pos..], "inline fn ") or
+            std.mem.startsWith(u8, body[pos..], "fn "))
+        {
             const fn_start = pos;
-            const fn_keyword = if (std.mem.startsWith(u8, body[pos..], "pub fn ")) "pub fn " else "fn ";
+            const fn_keyword = if (std.mem.startsWith(u8, body[pos..], "pub inline fn "))
+                "pub inline fn "
+            else if (std.mem.startsWith(u8, body[pos..], "pub fn "))
+                "pub fn "
+            else if (std.mem.startsWith(u8, body[pos..], "inline fn "))
+                "inline fn "
+            else
+                "fn ";
             const name_start = pos + fn_keyword.len;
 
             const paren_pos = std.mem.indexOfPos(u8, body, name_start, "(") orelse {
@@ -2682,12 +2693,40 @@ fn generateEnhancedClassWithRegistry(
 
     try writer.print("pub const {s} = struct {{\n", .{parsed.name});
 
-    // Always add allocator as first field (Zig-idiomatic pattern)
-    try writer.writeAll("    allocator: std.mem.Allocator,\n");
+    // Check if class already has allocator field
+    const has_allocator_field = blk: {
+        for (parsed.fields) |field| {
+            if (std.mem.eql(u8, field.name, "allocator")) break :blk true;
+        }
+        break :blk false;
+    };
 
-    // Separator if there are other fields
-    if ((parsed.parent_name != null) or parsed.mixin_names.len > 0 or parsed.properties.len > 0 or parsed.fields.len > 0) {
-        try writer.writeAll("\n");
+    // Check if class needs an allocator (has string fields or read-write string properties)
+    const needs_allocator = blk: {
+        // Check own fields for strings
+        for (parsed.fields) |field| {
+            if (std.mem.eql(u8, field.type_name, "[]const u8") or std.mem.eql(u8, field.type_name, "[]u8")) {
+                break :blk true;
+            }
+        }
+        // Check properties - only read-write ones need allocation
+        for (parsed.properties) |prop| {
+            const is_string_type = std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8");
+            if (is_string_type and prop.access == .read_write) {
+                break :blk true;
+            }
+        }
+        break :blk false;
+    };
+
+    // Only add allocator if not already present AND class needs one
+    if (!has_allocator_field and needs_allocator) {
+        try writer.writeAll("    allocator: std.mem.Allocator,\n");
+
+        // Separator if there are other fields
+        if ((parsed.parent_name != null) or parsed.mixin_names.len > 0 or parsed.properties.len > 0 or parsed.fields.len > 0) {
+            try writer.writeAll("\n");
+        }
     }
 
     // Generate parent fields (flattened - copy fields directly from parent classes)
@@ -3041,8 +3080,6 @@ fn generateEnhancedClassWithRegistry(
 
         // Generate default init if no init exists (neither in this class nor inherited)
         if (!has_init and !has_parent_init) {
-            if (parsed.methods.len > 0) try writer.writeAll("\n");
-
             // Collect ALL fields (parent + own) for init parameters
             var all_fields_for_init: std.ArrayList(FieldDef) = .empty;
             defer all_fields_for_init.deinit(allocator);
@@ -3084,84 +3121,108 @@ fn generateEnhancedClassWithRegistry(
             try all_fields_for_init.appendSlice(allocator, parsed.fields);
             try all_props_for_init.appendSlice(allocator, parsed.properties);
 
-            // Generate init that calls initFields
-            try writer.writeAll("    pub fn init(allocator: std.mem.Allocator");
-
-            // Add parameters for all fields
-            for (all_fields_for_init.items) |field| {
-                try writer.print(", {s}: {s}", .{ field.name, field.type_name });
-            }
-            for (all_props_for_init.items) |prop| {
-                try writer.print(", {s}: {s}", .{ prop.name, prop.type_name });
-            }
-
-            try writer.print(") !{s} {{\n", .{parsed.name});
-            try writer.print("        return try {s}.initFields(allocator, &.{{\n", .{parsed.name});
-
-            // Pass all parameters to initFields
-            var first = true;
-            for (all_fields_for_init.items) |field| {
-                if (!first) try writer.writeAll(",\n");
-                try writer.print("            .{s} = {s}", .{ field.name, field.name });
-                first = false;
-            }
-            for (all_props_for_init.items) |prop| {
-                if (!first) try writer.writeAll(",\n");
-                try writer.print("            .{s} = {s}", .{ prop.name, prop.name });
-                first = false;
-            }
-
-            // Only add trailing comma if there are fields
-            if (!first) {
-                try writer.writeAll(",\n        });\n");
-            } else {
-                try writer.writeAll("\n        });\n");
-            }
-            try writer.writeAll("    }\n");
-
-            // Generate initFields helper
-            try writer.writeAll("    fn initFields(allocator: std.mem.Allocator, fields: *const struct {");
-
-            // Add all fields to struct type
-            for (all_fields_for_init.items) |field| {
-                try writer.print(" {s}: {s},", .{ field.name, field.type_name });
-            }
-            for (all_props_for_init.items) |prop| {
-                try writer.print(" {s}: {s},", .{ prop.name, prop.type_name });
-            }
-
-            try writer.print(" }}) !{s} {{\n", .{parsed.name});
-            // If no fields, suppress unused parameter warning
-            if (all_fields_for_init.items.len == 0 and all_props_for_init.items.len == 0) {
-                try writer.writeAll("        _ = fields;\n");
-            }
-            try writer.print("        return .{{\n", .{});
-            try writer.writeAll("            .allocator = allocator,\n");
-
-            // Initialize all fields (allocate strings)
-            for (all_fields_for_init.items) |field| {
-                const needs_alloc = std.mem.eql(u8, field.type_name, "[]const u8") or
-                    std.mem.eql(u8, field.type_name, "[]u8");
-                if (needs_alloc) {
-                    try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ field.name, field.name });
-                } else {
-                    try writer.print("            .{s} = fields.{s},\n", .{ field.name, field.name });
+            // Check if we actually need init - only if there are fields or writable properties
+            // Read-only properties alone don't need initialization
+            const has_writable_props = blk: {
+                for (all_props_for_init.items) |prop| {
+                    if (prop.access == .read_write) break :blk true;
                 }
-            }
+                break :blk false;
+            };
 
-            // Initialize properties
-            for (all_props_for_init.items) |prop| {
-                const needs_alloc = std.mem.eql(u8, prop.type_name, "[]const u8") or
-                    std.mem.eql(u8, prop.type_name, "[]u8");
-                if (needs_alloc) {
-                    try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ prop.name, prop.name });
-                } else {
-                    try writer.print("            .{s} = fields.{s},\n", .{ prop.name, prop.name });
+            const needs_init = all_fields_for_init.items.len > 0 or has_writable_props;
+
+            // Only generate init if needed
+            if (needs_init) {
+                if (parsed.methods.len > 0) try writer.writeAll("\n");
+
+                // Generate init that calls initFields
+                try writer.writeAll("    pub fn init(allocator: std.mem.Allocator");
+
+                // Add parameters for all fields
+                for (all_fields_for_init.items) |field| {
+                    try writer.print(", {s}: {s}", .{ field.name, field.type_name });
                 }
-            }
+                for (all_props_for_init.items) |prop| {
+                    try writer.print(", {s}: {s}", .{ prop.name, prop.type_name });
+                }
 
-            try writer.writeAll("        };\n");
-            try writer.writeAll("    }\n");
+                try writer.print(") !{s} {{\n", .{parsed.name});
+                try writer.print("        return try {s}.initFields(allocator, &.{{\n", .{parsed.name});
+
+                // Pass all parameters to initFields
+                var first = true;
+                for (all_fields_for_init.items) |field| {
+                    if (!first) try writer.writeAll(",\n");
+                    try writer.print("            .{s} = {s}", .{ field.name, field.name });
+                    first = false;
+                }
+                for (all_props_for_init.items) |prop| {
+                    if (!first) try writer.writeAll(",\n");
+                    try writer.print("            .{s} = {s}", .{ prop.name, prop.name });
+                    first = false;
+                }
+
+                // Only add trailing comma if there are fields
+                if (!first) {
+                    try writer.writeAll(",\n        });\n");
+                } else {
+                    try writer.writeAll("\n        });\n");
+                }
+                try writer.writeAll("    }\n");
+
+                // Generate initFields helper
+                try writer.writeAll("    fn initFields(allocator: std.mem.Allocator, fields: *const struct {");
+
+                // Add all fields to struct type
+                for (all_fields_for_init.items) |field| {
+                    try writer.print(" {s}: {s},", .{ field.name, field.type_name });
+                }
+                for (all_props_for_init.items) |prop| {
+                    try writer.print(" {s}: {s},", .{ prop.name, prop.type_name });
+                }
+
+                try writer.print(" }}) !{s} {{\n", .{parsed.name});
+                // If no fields, suppress unused parameter warning
+                if (all_fields_for_init.items.len == 0 and all_props_for_init.items.len == 0) {
+                    try writer.writeAll("        _ = fields;\n");
+                }
+                try writer.print("        return .{{\n", .{});
+
+                // Only add allocator field if struct actually has one
+                if (!has_allocator_field and needs_allocator) {
+                    try writer.writeAll("            .allocator = allocator,\n");
+                }
+
+                // Initialize all fields (allocate strings only for non-borrowed data)
+                for (all_fields_for_init.items) |field| {
+                    // Fields always get allocated if they're string types (no read-only distinction for fields)
+                    const needs_alloc = std.mem.eql(u8, field.type_name, "[]const u8") or
+                        std.mem.eql(u8, field.type_name, "[]u8");
+                    if (needs_alloc) {
+                        try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ field.name, field.name });
+                    } else {
+                        try writer.print("            .{s} = fields.{s},\n", .{ field.name, field.name });
+                    }
+                }
+
+                // Initialize properties (read-only properties are NOT allocated)
+                for (all_props_for_init.items) |prop| {
+                    // Read-only properties are borrowed, not owned - no allocation needed
+                    const is_string_type = std.mem.eql(u8, prop.type_name, "[]const u8") or
+                        std.mem.eql(u8, prop.type_name, "[]u8");
+                    const needs_alloc = is_string_type and prop.access == .read_write;
+
+                    if (needs_alloc) {
+                        try writer.print("            .{s} = try allocator.dupe(u8, fields.{s}),\n", .{ prop.name, prop.name });
+                    } else {
+                        try writer.print("            .{s} = fields.{s},\n", .{ prop.name, prop.name });
+                    }
+                }
+
+                try writer.writeAll("        };\n");
+                try writer.writeAll("    }\n");
+            } // end if (needs_init)
         }
     }
 
@@ -3198,7 +3259,9 @@ fn generateEnhancedClassWithRegistry(
                     }
                 }
                 for (parent_info.properties) |prop| {
-                    if (std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8")) {
+                    // Only free read-write properties (read-only are borrowed, not owned)
+                    const is_string_type = std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8");
+                    if (is_string_type and prop.access == .read_write) {
                         try all_parent_string_fields.append(allocator, prop.name);
                     }
                 }
@@ -3221,7 +3284,9 @@ fn generateEnhancedClassWithRegistry(
                 }
             }
             for (mixin_info.properties) |prop| {
-                if (std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8")) {
+                // Only free read-write properties (read-only are borrowed, not owned)
+                const is_string_type = std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8");
+                if (is_string_type and prop.access == .read_write) {
                     try string_fields.append(allocator, prop.name);
                 }
             }
@@ -3234,7 +3299,9 @@ fn generateEnhancedClassWithRegistry(
             }
         }
         for (parsed.properties) |prop| {
-            if (std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8")) {
+            // Only free read-write properties (read-only are borrowed, not owned)
+            const is_string_type = std.mem.eql(u8, prop.type_name, "[]const u8") or std.mem.eql(u8, prop.type_name, "[]u8");
+            if (is_string_type and prop.access == .read_write) {
                 try string_fields.append(allocator, prop.name);
             }
         }

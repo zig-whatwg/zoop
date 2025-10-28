@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2025-10-28
+
+### Fixed
+- **Bug #1: Duplicate field generation** - Fixed code generator incorrectly duplicating fields in output
+  - Classes with explicit `allocator` field no longer have it duplicated
+  - Auto-generated allocator field now only added when needed (has string fields or read-write properties)
+  - Prevents compilation errors: `error: duplicate struct member name`
+- **Bug #2: Function body truncation** - Fixed parser not recognizing `inline` keyword
+  - Methods with `pub inline fn`, `inline fn` now properly parsed
+  - Function bodies no longer truncated with trailing commas
+  - Prevents syntax errors: `error: expected token '}', found ','`
+- **Bug #3: Unnecessary memory management for read-only properties** - Fixed allocation logic for mixins
+  - Read-only properties (`access = .read_only`) no longer generate allocator field
+  - Read-only properties with `[]const u8` type treated as borrowed, not owned
+  - No `init()`, `initFields()`, or `deinit()` generated for read-only-only mixins
+  - Prevents runtime crashes from attempting to free string literals
+  - Enables proper WebIDL bindings for WHATWG standards
+
+### Added
+- Minimal reproduction test cases in `tests/codegen_bugs_test/`
+- Comprehensive bug analysis documentation in `BUG_FIXES_SUMMARY.md`
+
 ## [0.1.0] - 2025-10-28
 
 ### Added
@@ -71,5 +93,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/zig-whatwg/zoop/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/zig-whatwg/zoop/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/zig-whatwg/zoop/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/zig-whatwg/zoop/releases/tag/v0.1.0
